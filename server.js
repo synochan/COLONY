@@ -10,14 +10,16 @@ const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, "data");
 const ACCOUNTS_FILE = path.join(DATA_DIR, "accounts.json");
+const DEFAULT_ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
+const DEFAULT_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Admin12345!";
 let isShuttingDown = false;
 
 const MAP_WIDTH = 8200;
 const MAP_HEIGHT = 5200;
 const FOOD_TARGET = 720;
 const GROWTH_NODE_TARGET = 42;
-const TICK_RATE = 36;
-const BROADCAST_RATE = 36;
+const TICK_RATE = 30;
+const BROADCAST_RATE = 24;
 const MAX_PLAYERS = 30;
 const MIN_PLAYERS = 2;
 const INPUT_TIMEOUT_MS = 5000;
@@ -70,6 +72,13 @@ const COLONY_KILL_SCORE_REWARD = 58;
 const HIVE_SCORE_STEAL_PCT = 0.42;
 const HIVE_SCORE_STEAL_MIN = 30;
 const HIVE_SCORE_STEAL_CAP = 780;
+const MAX_SOCKET_BACKLOG_BYTES = 256 * 1024;
+const RESOURCE_VIEW_PADDING = 1150;
+const RECENT_EVENTS_INTERVAL = 4;
+const RESOURCE_REFRESH_INTERVAL = 18;
+const LEADERBOARD_REFRESH_INTERVAL = 6;
+const ADMIN_STARTING_SCORE = 12000;
+const ADMIN_MIN_WORKERS = 8;
 
 const STARTER_SKINS = ["ember", "tide", "moss"];
 const LEVEL_SKIN_UNLOCKS = [
@@ -364,7 +373,8 @@ function ensureAccountStore() {
       ACCOUNTS_FILE,
       JSON.stringify(
         {
-          accounts: []
+          accounts: [],
+          bannedGuests: []
         },
         null,
         2
@@ -380,11 +390,12 @@ function loadAccountStore() {
     const raw = fs.readFileSync(ACCOUNTS_FILE, "utf8");
     const parsed = JSON.parse(raw);
     if (!parsed || !Array.isArray(parsed.accounts)) {
-      return { accounts: [] };
+      return { accounts: [], bannedGuests: [] };
     }
+    parsed.bannedGuests = Array.isArray(parsed.bannedGuests) ? parsed.bannedGuests : [];
     return parsed;
   } catch (error) {
-    return { accounts: [] };
+    return { accounts: [], bannedGuests: [] };
   }
 }
 
@@ -726,6 +737,30 @@ function sanitizeGuestName(name) {
   return trimmed || `Guest ${Math.floor(Math.random() * 900 + 100)}`;
 }
 
+function normalizeGuestName(name) {
+  return sanitizeGuestName(name).toLowerCase();
+}
+
+function isAdminAccount(account) {
+  return Boolean(account?.role === "admin");
+}
+
+function isAdminPlayer(player) {
+  return Boolean(player?.isAdmin);
+}
+
+function isAdminGodMode(player) {
+  return Boolean(isAdminPlayer(player) && player?.adminState?.godMode);
+}
+
+function isBannedAccount(account) {
+  return Boolean(account?.bannedAt);
+}
+
+function isBannedGuestName(name) {
+  return (accountStore.bannedGuests || []).includes(normalizeGuestName(name));
+}
+
 function isStarterSkin(skinId) {
   return STARTER_SKINS.includes(skinId);
 }
@@ -733,6 +768,40 @@ function isStarterSkin(skinId) {
 function findAccountByUsername(username) {
   const lowered = normalizeUsername(username).toLowerCase();
   return accountStore.accounts.find((account) => account.username.toLowerCase() === lowered) || null;
+}
+
+function ensureAdminAccount() {
+  const username = normalizeUsername(DEFAULT_ADMIN_USERNAME);
+  if (!username || DEFAULT_ADMIN_PASSWORD.length < 4) {
+    return;
+  }
+
+  let account = findAccountByUsername(username);
+  if (!account) {
+    const salt = crypto.randomBytes(8).toString("hex");
+    account = {
+      id: createId("acct"),
+      username,
+      salt,
+      passwordHash: hashPassword(DEFAULT_ADMIN_PASSWORD, salt),
+      xp: xpFloorForLevel(MAX_LEVEL),
+      level: MAX_LEVEL,
+      ownedSkins: Object.keys(SKIN_LIBRARY),
+      selectedSkin: "void",
+      totalMatches: 0,
+      totalKills: 0,
+      role: "admin",
+      createdAt: Date.now(),
+      lastSeenAt: Date.now()
+    };
+    accountStore.accounts.push(account);
+    console.log(`[admin] Created admin account "${username}". Change ADMIN_PASSWORD in production if needed.`);
+  } else {
+    account.role = "admin";
+  }
+
+  applyLevelUnlocks(account);
+  scheduleAccountSave();
 }
 
 function buildCardChoice(selectedCardIds, rewardLevel) {
@@ -761,11 +830,19 @@ function applyLevelUnlocks(account) {
     owned.add(skinId);
   }
 
-  const level = levelFromXp(account.xp || 0);
+  let level = levelFromXp(account.xp || 0);
   for (const unlock of LEVEL_SKIN_UNLOCKS) {
     if (level >= unlock.level) {
       owned.add(unlock.skinId);
     }
+  }
+
+  if (isAdminAccount(account)) {
+    for (const skinId of Object.keys(SKIN_LIBRARY)) {
+      owned.add(skinId);
+    }
+    account.xp = Math.max(account.xp || 0, xpFloorForLevel(MAX_LEVEL));
+    level = levelFromXp(account.xp || 0);
   }
 
   account.level = level;
@@ -792,6 +869,8 @@ function summarizeAccount(account) {
     ownedSkins: account.ownedSkins,
     totalMatches: account.totalMatches || 0,
     totalKills: account.totalKills || 0,
+    isAdmin: isAdminAccount(account),
+    banned: isBannedAccount(account),
     activeCards: [],
     pendingCardChoices: [],
     nextCardRewardLevel: null,
@@ -812,6 +891,8 @@ function summarizeGuestSession(session) {
     ownedSkins: STARTER_SKINS,
     totalMatches: 0,
     totalKills: 0,
+    isAdmin: false,
+    banned: isBannedGuestName(session.guestName),
     activeCards: [],
     pendingCardChoices: [],
     nextCardRewardLevel: 5,
@@ -923,6 +1004,83 @@ function buildProfileForSession(session) {
   return summarizeAccount(account);
 }
 
+function adminAccountFromSession(session) {
+  if (!session || session.mode !== "account") {
+    return null;
+  }
+
+  const account = getAccountById(session.accountId);
+  return isAdminAccount(account) ? account : null;
+}
+
+function requireAdminSession(request, response, payload) {
+  const session = resolveSession(request, payload);
+  const account = adminAccountFromSession(session);
+  if (!session || !account) {
+    sendJson(response, 403, { error: "Admin access required." });
+    return null;
+  }
+
+  return { session, account };
+}
+
+function redactedAccountsPreview() {
+  return accountStore.accounts.map((account) => ({
+    id: account.id,
+    username: account.username,
+    role: account.role || "player",
+    banned: isBannedAccount(account),
+    bannedAt: account.bannedAt || 0,
+    banReason: account.banReason || "",
+    level: account.level || levelFromXp(account.xp || 0),
+    xp: Math.floor(account.xp || 0),
+    selectedSkin: account.selectedSkin || STARTER_SKINS[0],
+    ownedSkins: Array.isArray(account.ownedSkins) ? account.ownedSkins.length : 0,
+    totalMatches: account.totalMatches || 0,
+    totalKills: account.totalKills || 0,
+    createdAt: account.createdAt || 0,
+    lastSeenAt: account.lastSeenAt || 0
+  }));
+}
+
+function adminDashboardPayload() {
+  return {
+    players: Array.from(state.players.values())
+      .map((player) => ({
+        id: player.id,
+        name: player.name,
+        accountId: player.accountId || null,
+        isAdmin: Boolean(player.isAdmin),
+        alive: player.alive,
+        score: Math.round(player.score),
+        level: player.matchLevel,
+        workers: player.workers.length,
+        health: Math.round(player.health),
+        healthMax: Math.round(player.healthMax),
+        socketBufferedBytes: player.socket?.bufferedAmount || 0,
+        sessionToken: player.sessionToken
+      }))
+      .sort((left, right) => right.score - left.score),
+    accounts: redactedAccountsPreview(),
+    bannedGuests: [...(accountStore.bannedGuests || [])].sort(),
+    network: {
+      tickRate: TICK_RATE,
+      broadcastRate: BROADCAST_RATE,
+      onlinePlayers: state.players.size,
+      spectators: state.spectators.size,
+      sessions: sessions.size,
+      foods: state.foods.length,
+      growthNodes: state.growthNodes.length,
+      recentEvents: state.events.length,
+      resourcesVersion: state.resourcesVersion,
+      leaderboardVersion: state.leaderboardVersion,
+      heapUsedMb: Math.round(process.memoryUsage().heapUsed / (1024 * 1024)),
+      rssMb: Math.round(process.memoryUsage().rss / (1024 * 1024)),
+      uptimeSec: Math.round(process.uptime())
+    }
+  };
+}
+
 function parseAuthToken(request, payload) {
   const header = request.headers.authorization || "";
   if (header.startsWith("Bearer ")) {
@@ -966,8 +1124,52 @@ function refreshPlayerDerivedStats(player) {
   player.maxEggs = maxEggsForPlayer(player);
   player.maxWorkers = maxWorkersForPlayer(player);
   player.eggScoreStep = eggScoreStepForPlayer(player);
+
+  if (isAdminPlayer(player)) {
+    player.healthMax = Math.max(player.healthMax, 2400);
+    player.commandRange = Math.max(player.commandRange, 1400);
+    player.maxEggs = Math.max(player.maxEggs, 20);
+    player.maxWorkers = Math.max(player.maxWorkers, 30);
+    player.eggScoreStep = Math.min(player.eggScoreStep, 24);
+  }
+
   player.eggs = clamp(player.eggs, 0, player.maxEggs);
   player.health = clamp(player.health, 0, player.healthMax);
+}
+
+function applyAdminLoadout(player, options = {}) {
+  if (!isAdminPlayer(player)) {
+    return;
+  }
+
+  if (!player.adminState) {
+    player.adminState = {
+      godMode: true
+    };
+  }
+
+  player.score = Math.max(player.score, options.score ?? ADMIN_STARTING_SCORE);
+  player.matchLevel = MAX_LEVEL;
+  player.matchXp = matchXpFloorForLevel(MAX_LEVEL);
+  player.claimedCardRewardLevels = [...CARD_REWARD_LEVELS];
+  player.pendingCardChoices = [];
+  player.activeCardIds = [...Object.keys(CARD_LIBRARY)];
+  player.buffState = createBuffState(player.activeCardIds);
+  refreshPlayerDerivedStats(player);
+  player.health = player.healthMax;
+  player.eggs = player.maxEggs;
+
+  while (player.workers.length < ADMIN_MIN_WORKERS) {
+    player.workers.push(createWorker(player));
+  }
+
+  for (const worker of player.workers) {
+    worker.food = Math.max(worker.food, 26);
+    refreshWorkerDerivedStats(worker, player);
+    worker.health = worker.healthMax;
+  }
+
+  bumpLeaderboardVersion();
 }
 
 function resetArenaState() {
@@ -1097,6 +1299,7 @@ function createPlayer(identity) {
     profileMode: identity.mode,
     sessionToken: identity.sessionToken,
     accountId: identity.accountId || null,
+    isAdmin: Boolean(identity.isAdmin),
     x: spawnPoint.x,
     y: spawnPoint.y,
     radius: PLAYER_BASE_RADIUS,
@@ -1128,6 +1331,11 @@ function createPlayer(identity) {
     },
     isAttacking: false,
     isBoosting: false,
+    adminState: identity.isAdmin
+      ? {
+          godMode: true
+        }
+      : null,
     mergeCooldownUntil: 0,
     splitCooldownUntil: 0,
     commandPoint: { x: spawnPoint.x, y: spawnPoint.y },
@@ -1148,6 +1356,8 @@ function createPlayer(identity) {
     player.workers.push(createWorker(player));
   }
 
+  applyAdminLoadout(player);
+
   return player;
 }
 
@@ -1159,10 +1369,12 @@ function playerActiveCards(player) {
   return (player?.activeCardIds || []).map(summarizeCard).filter(Boolean);
 }
 
-function serializePlayer(player) {
+function serializePublicPlayer(player) {
   return {
     id: player.id,
     name: player.name,
+    isAdmin: Boolean(player.isAdmin),
+    adminGodMode: Boolean(player.adminState?.godMode),
     level: playerHiveLevel(player),
     activeCards: playerActiveCards(player),
     color: player.color,
@@ -1173,24 +1385,8 @@ function serializePlayer(player) {
     health: Math.round(player.health),
     healthMax: Math.round(player.healthMax),
     score: Math.round(player.score),
-    matchXp: Math.round(player.matchXp),
-    matchXpIntoLevel: Math.round(player.matchXp - matchXpFloorForLevel(player.matchLevel)),
-    matchXpForNextLevel:
-      matchXpNeededForNextLevel(player.matchLevel) === null
-        ? null
-        : matchXpNeededForNextLevel(player.matchLevel) - matchXpFloorForLevel(player.matchLevel),
-    eggs: player.eggs,
-    maxEggs: player.maxEggs,
     alive: player.alive,
-    mergeCooldownMs: Math.max(0, player.mergeCooldownUntil - Date.now()),
-    splitCooldownMs: Math.max(0, player.splitCooldownUntil - Date.now()),
-    commandRange: Math.round(player.commandRange),
-    maxWorkers: player.maxWorkers,
     spawnProtectedMs: Math.max(0, (player.spawnGraceUntil || 0) - Date.now()),
-    pendingCardChoices: summarizePlayerPendingChoices(player),
-    nextCardRewardLevel: nextPlayerCardRewardLevel(player),
-    commandX: Math.round(player.commandPoint.x),
-    commandY: Math.round(player.commandPoint.y),
     workers: player.workers.map((worker) => ({
       id: worker.id,
       x: Math.round(worker.x),
@@ -1202,6 +1398,28 @@ function serializePlayer(player) {
       mode: worker.mode
     })),
     respawnTimer: Math.max(0, player.respawnTimer)
+  };
+}
+
+function serializePlayerForSelf(player) {
+  return {
+    ...serializePublicPlayer(player),
+    matchXp: Math.round(player.matchXp),
+    matchXpIntoLevel: Math.round(player.matchXp - matchXpFloorForLevel(player.matchLevel)),
+    matchXpForNextLevel:
+      matchXpNeededForNextLevel(player.matchLevel) === null
+        ? null
+        : matchXpNeededForNextLevel(player.matchLevel) - matchXpFloorForLevel(player.matchLevel),
+    eggs: player.eggs,
+    maxEggs: player.maxEggs,
+    mergeCooldownMs: Math.max(0, player.mergeCooldownUntil - Date.now()),
+    splitCooldownMs: Math.max(0, player.splitCooldownUntil - Date.now()),
+    commandRange: Math.round(player.commandRange),
+    maxWorkers: player.maxWorkers,
+    pendingCardChoices: summarizePlayerPendingChoices(player),
+    nextCardRewardLevel: nextPlayerCardRewardLevel(player),
+    commandX: Math.round(player.commandPoint.x),
+    commandY: Math.round(player.commandPoint.y)
   };
 }
 
@@ -1353,7 +1571,8 @@ function resetPlayer(player) {
     selectedSkin: player.skinId,
     mode: player.profileMode,
     sessionToken: player.sessionToken,
-    accountId: player.accountId
+    accountId: player.accountId,
+    isAdmin: player.isAdmin
   });
 
   player.x = replacement.x;
@@ -1740,6 +1959,10 @@ function handleWorkerCombat(player, worker, deltaSeconds) {
   clampWorkerToCommandRange(player, worker);
 
   if (target.kind === "worker") {
+    if (isAdminGodMode(target.player)) {
+      target.worker.health = target.worker.healthMax;
+      return;
+    }
     const reach = workerReach(worker, player) + target.worker.radius;
     if (distance(worker, target.worker) <= reach) {
       target.worker.health -= workerDamage(worker, player) * deltaSeconds;
@@ -1755,6 +1978,10 @@ function handleWorkerCombat(player, worker, deltaSeconds) {
 
   const reach = workerReach(worker, player) + target.player.radius + attackReachForPlayer(player);
   if (distance(worker, target.player) <= reach) {
+    if (isAdminGodMode(target.player)) {
+      target.player.health = target.player.healthMax;
+      return;
+    }
     target.player.health -= playerCoreDamage(worker, player) * deltaSeconds;
     const direction = normalize(target.player.x - worker.x, target.player.y - worker.y);
     applyHiveKnockback(target.player, direction, HIVE_ATTACK_KNOCKBACK);
@@ -1799,6 +2026,9 @@ function updatePlayer(player, deltaSeconds) {
   player.knockbackX *= 0.48;
   player.knockbackY *= 0.48;
   player.health = clamp(player.health + playerHealthRegen(player) * deltaSeconds, 0, player.healthMax);
+  if (isAdminGodMode(player)) {
+    player.health = player.healthMax;
+  }
 
   if (isBoosting) {
     spendScore(player, BOOST_SCORE_COST_PER_SECOND * deltaSeconds);
@@ -1915,6 +2145,18 @@ function buildLeaderboard(players) {
     .slice(0, LEADERBOARD_SIZE);
 }
 
+function buildSnapshotContext() {
+  const players = Array.from(state.players.values());
+  const publicPlayers = players.map(serializePublicPlayer);
+  const publicPlayersById = new Map(publicPlayers.map((player, index) => [player.id, { player, index }]));
+  return {
+    players,
+    publicPlayers,
+    publicPlayersById,
+    leaderboard: buildLeaderboard(publicPlayers)
+  };
+}
+
 function resolveSpectatorFocusId(players, requestedPlayerId) {
   if (requestedPlayerId && players.some((player) => player.id === requestedPlayerId && player.alive)) {
     return requestedPlayerId;
@@ -1927,17 +2169,99 @@ function resolveSpectatorFocusId(players, requestedPlayerId) {
   return alivePlayers[0]?.id || players[0]?.id || null;
 }
 
-function snapshotForViewer({ playerId = null, sessionToken = "", spectatorMode = false, spectatorFocusId = null, viewerState = null } = {}) {
-  const players = Array.from(state.players.values()).map(serializePlayer);
+function resourceViewStateForViewer({ playerId = null, spectatorMode = false, spectatorFocusId = null } = {}) {
+  if (spectatorMode) {
+    const focusPlayer = Array.from(state.players.values()).find((player) => player.id === spectatorFocusId && player.alive);
+    if (focusPlayer) {
+      return focusPlayer;
+    }
+  }
+
+  if (playerId) {
+    return state.players.get(playerId) || null;
+  }
+
+  return null;
+}
+
+function visibleResourcesAround(viewerPlayer) {
+  if (!viewerPlayer) {
+    return {
+      foods: state.foods,
+      growthNodes: state.growthNodes
+    };
+  }
+
+  const halfWidth = Math.max(RESOURCE_VIEW_PADDING, viewerPlayer.commandRange * 2.4);
+  const halfHeight = Math.max(RESOURCE_VIEW_PADDING * 0.72, viewerPlayer.commandRange * 1.8);
+  const minX = viewerPlayer.x - halfWidth;
+  const maxX = viewerPlayer.x + halfWidth;
+  const minY = viewerPlayer.y - halfHeight;
+  const maxY = viewerPlayer.y + halfHeight;
+
+  return {
+    foods: state.foods.filter((food) => food.x >= minX && food.x <= maxX && food.y >= minY && food.y <= maxY),
+    growthNodes: state.growthNodes.filter((node) => node.x >= minX && node.x <= maxX && node.y >= minY && node.y <= maxY)
+  };
+}
+
+function shouldRefreshResourcesForViewer(viewerState, viewerPlayer) {
+  if (!viewerState || !viewerPlayer) {
+    return true;
+  }
+
+  if (viewerState.resourcesVersion !== state.resourcesVersion) {
+    return true;
+  }
+
+  const lastViewX = Number(viewerState.resourceViewX);
+  const lastViewY = Number(viewerState.resourceViewY);
+  if (!Number.isFinite(lastViewX) || !Number.isFinite(lastViewY)) {
+    return true;
+  }
+
+  const movementThreshold = Math.max(220, viewerPlayer.commandRange * 0.38);
+  return Math.hypot(viewerPlayer.x - lastViewX, viewerPlayer.y - lastViewY) >= movementThreshold;
+}
+
+function snapshotPlayersForViewer(snapshotContext, playerId) {
+  if (!playerId) {
+    return snapshotContext.publicPlayers;
+  }
+
+  const player = state.players.get(playerId);
+  const playerIndex = snapshotContext.publicPlayersById.get(playerId)?.index;
+  if (!player || playerIndex === undefined) {
+    return snapshotContext.publicPlayers;
+  }
+
+  const players = snapshotContext.publicPlayers.slice();
+  players[playerIndex] = serializePlayerForSelf(player);
+  return players;
+}
+
+function snapshotForViewer({
+  playerId = null,
+  sessionToken = "",
+  spectatorMode = false,
+  spectatorFocusId = null,
+  viewerState = null,
+  snapshotContext = null
+} = {}) {
+  const resolvedContext = snapshotContext || buildSnapshotContext();
+  const players = snapshotPlayersForViewer(resolvedContext, spectatorMode ? null : playerId);
   const profileSession = sessionToken ? getSessionByToken(sessionToken) : state.players.get(playerId) ? getSessionByToken(state.players.get(playerId).sessionToken) : null;
   const resolvedFocusId = spectatorMode ? resolveSpectatorFocusId(players, spectatorFocusId) : null;
-  const includeResources = !viewerState || viewerState.resourcesVersion !== state.resourcesVersion || broadcastSequence % 18 === 0;
-  const includeLeaderboard = !viewerState || viewerState.leaderboardVersion !== state.leaderboardVersion || broadcastSequence % 6 === 0;
+  const resourceViewPlayer = resourceViewStateForViewer({ playerId, spectatorMode, spectatorFocusId: resolvedFocusId });
+  const includeResources =
+    shouldRefreshResourcesForViewer(viewerState, resourceViewPlayer) || broadcastSequence % RESOURCE_REFRESH_INTERVAL === 0;
+  const includeLeaderboard = !viewerState || viewerState.leaderboardVersion !== state.leaderboardVersion || broadcastSequence % LEADERBOARD_REFRESH_INTERVAL === 0;
   const includeProfile = !viewerState || !viewerState.profileSent;
-  const leaderboard = includeLeaderboard ? buildLeaderboard(players) : undefined;
+  const leaderboard = includeLeaderboard ? resolvedContext.leaderboard : undefined;
 
   const snapshot = {
     type: "state",
+    sequence: broadcastSequence,
     you: playerId,
     spectator: {
       active: spectatorMode,
@@ -1951,10 +2275,11 @@ function snapshotForViewer({ playerId = null, sessionToken = "", spectatorMode =
       maxPlayers: MAX_PLAYERS,
       roundScoreTarget: ROUND_SCORE_TARGET,
       tickRate: TICK_RATE,
-      broadcastRate: BROADCAST_RATE
+      broadcastRate: BROADCAST_RATE,
+      onlinePlayers: state.players.size
     },
     players,
-    recentEvents: broadcastSequence % 4 === 0 ? state.events.slice(-8) : undefined,
+    recentEvents: broadcastSequence % RECENT_EVENTS_INTERVAL === 0 ? state.events.slice(-8) : undefined,
     round: {
       number: state.round.number,
       status: state.round.status,
@@ -1965,9 +2290,14 @@ function snapshotForViewer({ playerId = null, sessionToken = "", spectatorMode =
     }
   };
 
+  if (playerId && state.players.has(playerId)) {
+    snapshot.ackInputSeq = state.players.get(playerId).lastInputSeq || 0;
+  }
+
   if (includeResources) {
-    snapshot.foods = state.foods;
-    snapshot.growthNodes = state.growthNodes;
+    const visibleResources = visibleResourcesAround(resourceViewPlayer);
+    snapshot.foods = visibleResources.foods;
+    snapshot.growthNodes = visibleResources.growthNodes;
     snapshot.resourcesVersion = state.resourcesVersion;
   }
 
@@ -1983,6 +2313,8 @@ function snapshotForViewer({ playerId = null, sessionToken = "", spectatorMode =
   if (viewerState) {
     if (includeResources) {
       viewerState.resourcesVersion = state.resourcesVersion;
+      viewerState.resourceViewX = resourceViewPlayer?.x ?? null;
+      viewerState.resourceViewY = resourceViewPlayer?.y ?? null;
     }
     if (includeLeaderboard) {
       viewerState.leaderboardVersion = state.leaderboardVersion;
@@ -1997,18 +2329,27 @@ function snapshotForViewer({ playerId = null, sessionToken = "", spectatorMode =
 
 function broadcastGameState() {
   broadcastSequence += 1;
+  const snapshotContext = buildSnapshotContext();
   for (const player of state.players.values()) {
     if (player.socket?.readyState === 1) {
+      if ((player.socket.bufferedAmount || 0) > MAX_SOCKET_BACKLOG_BYTES) {
+        continue;
+      }
       player.netState = player.netState || { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
-      player.socket.send(JSON.stringify(snapshotForViewer({ playerId: player.id, viewerState: player.netState })));
+      player.socket.send(JSON.stringify(snapshotForViewer({ playerId: player.id, viewerState: player.netState, snapshotContext })));
     }
   }
 
   for (const spectator of state.spectators.values()) {
     if (spectator.socket?.readyState === 1) {
+      if ((spectator.socket.bufferedAmount || 0) > MAX_SOCKET_BACKLOG_BYTES) {
+        continue;
+      }
       spectator.netState = spectator.netState || { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
       spectator.socket.send(
-        JSON.stringify(snapshotForViewer({ sessionToken: spectator.sessionToken, spectatorMode: true, viewerState: spectator.netState }))
+        JSON.stringify(
+          snapshotForViewer({ sessionToken: spectator.sessionToken, spectatorMode: true, viewerState: spectator.netState, snapshotContext })
+        )
       );
     }
   }
@@ -2036,6 +2377,11 @@ function handleRegister(request, response, payload) {
 
   if (findAccountByUsername(username)) {
     sendJson(response, 409, { error: "That username is already taken." });
+    return;
+  }
+
+  if (username.toLowerCase() === normalizeUsername(DEFAULT_ADMIN_USERNAME).toLowerCase()) {
+    sendJson(response, 403, { error: "That username is reserved." });
     return;
   }
 
@@ -2076,6 +2422,11 @@ function handleLogin(response, payload) {
     return;
   }
 
+  if (isBannedAccount(account)) {
+    sendJson(response, 403, { error: account.banReason || "This account has been banned." });
+    return;
+  }
+
   account.lastSeenAt = Date.now();
   applyLevelUnlocks(account);
   scheduleAccountSave();
@@ -2089,6 +2440,10 @@ function handleLogin(response, payload) {
 
 function handleGuest(response, payload) {
   const guestName = sanitizeGuestName(payload.name);
+  if (isBannedGuestName(guestName)) {
+    sendJson(response, 403, { error: "This guest profile has been banned." });
+    return;
+  }
   const selectedSkin = isStarterSkin(payload.starterSkin) ? payload.starterSkin : STARTER_SKINS[0];
   const authToken = createGuestSession(guestName, selectedSkin);
   sendJson(response, 200, {
@@ -2111,6 +2466,213 @@ function handleAuthMe(request, response) {
   }
 
   sendJson(response, 200, { profile });
+}
+
+function handleAdminAccountsPreview(request, response) {
+  const admin = requireAdminSession(request, response);
+  if (!admin) {
+    return;
+  }
+
+  sendJson(response, 200, {
+    accounts: redactedAccountsPreview()
+  });
+}
+
+function handleAdminDashboard(request, response) {
+  const admin = requireAdminSession(request, response);
+  if (!admin) {
+    return;
+  }
+
+  sendJson(response, 200, adminDashboardPayload());
+}
+
+function handleAdminAction(request, response, payload) {
+  const admin = requireAdminSession(request, response, payload);
+  if (!admin) {
+    return;
+  }
+
+  const player = Array.from(state.players.values()).find((entry) => entry.sessionToken === admin.session.token);
+  if (!player) {
+    sendJson(response, 409, { error: "Join the arena first to use admin controls." });
+    return;
+  }
+
+  const action = String(payload.action || "");
+  const targetPlayerId = String(payload.targetPlayerId || "");
+  const targetAccountId = String(payload.targetAccountId || "");
+  const targetGuestName = String(payload.targetGuestName || "");
+
+  const findTargetPlayer = () => Array.from(state.players.values()).find((entry) => entry.id === targetPlayerId);
+  const kickPlayer = (targetPlayer, reason = "Kicked by admin") => {
+    if (!targetPlayer || targetPlayer.isAdmin) {
+      return false;
+    }
+    try {
+      targetPlayer.socket?.close(4001, reason);
+    } catch {}
+    if (state.players.has(targetPlayer.id)) {
+      state.players.delete(targetPlayer.id);
+      bumpLeaderboardVersion();
+      pushEvent("admin_kick", { admin: player.name, target: targetPlayer.name });
+    }
+    return true;
+  };
+
+  const banAccountById = (accountId, reason = "Banned by admin") => {
+    const account = getAccountById(accountId);
+    if (!account || isAdminAccount(account)) {
+      return false;
+    }
+    account.bannedAt = Date.now();
+    account.banReason = reason;
+    scheduleAccountSave();
+    for (const [token, session] of sessions.entries()) {
+      if (session.accountId === account.id) {
+        sessions.delete(token);
+      }
+    }
+    for (const targetPlayer of Array.from(state.players.values())) {
+      if (targetPlayer.accountId === account.id) {
+        kickPlayer(targetPlayer, "Banned by admin");
+      }
+    }
+    pushEvent("admin_ban", { admin: player.name, target: account.username });
+    return true;
+  };
+
+  const banGuestByName = (guestName) => {
+    const normalized = normalizeGuestName(guestName);
+    if (!normalized) {
+      return false;
+    }
+    accountStore.bannedGuests = accountStore.bannedGuests || [];
+    if (!accountStore.bannedGuests.includes(normalized)) {
+      accountStore.bannedGuests.push(normalized);
+      scheduleAccountSave();
+    }
+    for (const [token, session] of sessions.entries()) {
+      if (session.mode === "guest" && normalizeGuestName(session.guestName) === normalized) {
+        sessions.delete(token);
+      }
+    }
+    for (const targetPlayer of Array.from(state.players.values())) {
+      if (!targetPlayer.accountId && normalizeGuestName(targetPlayer.name) === normalized) {
+        kickPlayer(targetPlayer, "Guest banned by admin");
+      }
+    }
+    pushEvent("admin_ban_guest", { admin: player.name, target: normalized });
+    return true;
+  };
+
+  const unbanAccountById = (accountId) => {
+    const account = getAccountById(accountId);
+    if (!account) {
+      return false;
+    }
+    delete account.bannedAt;
+    delete account.banReason;
+    scheduleAccountSave();
+    pushEvent("admin_unban", { admin: player.name, target: account.username });
+    return true;
+  };
+
+  const unbanGuestByName = (guestName) => {
+    const normalized = normalizeGuestName(guestName);
+    const before = (accountStore.bannedGuests || []).length;
+    accountStore.bannedGuests = (accountStore.bannedGuests || []).filter((entry) => entry !== normalized);
+    if (accountStore.bannedGuests.length !== before) {
+      scheduleAccountSave();
+      pushEvent("admin_unban_guest", { admin: player.name, target: normalized });
+      return true;
+    }
+    return false;
+  };
+
+  if (action === "toggle_god_mode") {
+    player.adminState.godMode = !player.adminState.godMode;
+  } else if (action === "apply_test_build") {
+    applyAdminLoadout(player, { score: ADMIN_STARTING_SCORE });
+  } else if (action === "heal_refill") {
+    refreshPlayerDerivedStats(player);
+    player.health = player.healthMax;
+    player.eggs = player.maxEggs;
+    for (const worker of player.workers) {
+      worker.health = worker.healthMax;
+    }
+  } else if (action === "add_score") {
+    grantScore(player, Number(payload.amount) || 5000);
+  } else if (action === "spawn_workers") {
+    const spawnCount = clamp(Number(payload.amount) || 4, 1, 12);
+    for (let index = 0; index < spawnCount && player.workers.length < player.maxWorkers; index += 1) {
+      player.workers.push(createWorker(player));
+    }
+    applyAdminLoadout(player, { score: player.score });
+  } else if (action === "reset_cooldowns") {
+    player.mergeCooldownUntil = 0;
+    player.splitCooldownUntil = 0;
+  } else if (action === "kick_player") {
+    if (!kickPlayer(findTargetPlayer())) {
+      sendJson(response, 400, { error: "Unable to kick that player." });
+      return;
+    }
+  } else if (action === "ban_player") {
+    const targetPlayer = findTargetPlayer();
+    if (!targetPlayer) {
+      sendJson(response, 404, { error: "Player not found." });
+      return;
+    }
+    if (targetPlayer.accountId) {
+      if (!banAccountById(targetPlayer.accountId, "Banned by admin")) {
+        sendJson(response, 400, { error: "Unable to ban that account." });
+        return;
+      }
+    } else if (!banGuestByName(targetPlayer.name)) {
+      sendJson(response, 400, { error: "Unable to ban that guest." });
+      return;
+    }
+  } else if (action === "unban_account") {
+    if (!unbanAccountById(targetAccountId)) {
+      sendJson(response, 400, { error: "Unable to unban that account." });
+      return;
+    }
+  } else if (action === "unban_guest") {
+    if (!unbanGuestByName(targetGuestName)) {
+      sendJson(response, 400, { error: "Unable to unban that guest." });
+      return;
+    }
+  } else if (action === "respawn_player") {
+    const targetPlayer = findTargetPlayer();
+    if (!targetPlayer || targetPlayer.isAdmin) {
+      sendJson(response, 400, { error: "Unable to respawn that player." });
+      return;
+    }
+    resetPlayer(targetPlayer);
+  } else if (action === "kill_player") {
+    const targetPlayer = findTargetPlayer();
+    if (!targetPlayer || targetPlayer.isAdmin) {
+      sendJson(response, 400, { error: "Unable to collapse that player." });
+      return;
+    }
+    targetPlayer.health = 0;
+    collapsePlayer(player, targetPlayer);
+  } else if (action === "reset_round") {
+    startNextRound();
+  } else {
+    sendJson(response, 400, { error: "Unknown admin action." });
+    return;
+  }
+
+  sendJson(response, 200, {
+    ok: true,
+    profile: buildProfileForSession(admin.session),
+    adminState: {
+      godMode: Boolean(player.adminState?.godMode)
+    },
+    dashboard: adminDashboardPayload()
+  });
 }
 
 function handleSelectSkin(request, response, payload) {
@@ -2231,12 +2793,18 @@ function handleJoin(request, response, payload) {
     return;
   }
 
+  if ((session.mode === "guest" && isBannedGuestName(session.guestName)) || profile.banned) {
+    sendJson(response, 403, { error: session.mode === "guest" ? "This guest profile has been banned." : "This account has been banned." });
+    return;
+  }
+
   const player = createPlayer({
     displayName: profile.displayName,
     selectedSkin: profile.selectedSkin,
     mode: profile.mode,
     sessionToken: session.token,
-    accountId: session.mode === "account" ? session.accountId : null
+    accountId: session.mode === "account" ? session.accountId : null,
+    isAdmin: Boolean(profile.isAdmin)
   });
 
   state.players.set(player.id, player);
@@ -2265,6 +2833,11 @@ function handleSpectate(request, response, payload) {
   const profile = buildProfileForSession(session);
   if (!profile) {
     sendJson(response, 401, { error: "Session is no longer valid." });
+    return;
+  }
+
+  if ((session.mode === "guest" && isBannedGuestName(session.guestName)) || profile.banned) {
+    sendJson(response, 403, { error: session.mode === "guest" ? "This guest profile has been banned." : "This account has been banned." });
     return;
   }
 
@@ -2298,6 +2871,7 @@ function serveFile(filePath, response) {
 for (const account of accountStore.accounts) {
   applyLevelUnlocks(account);
 }
+ensureAdminAccount();
 scheduleAccountSave();
 
 const server = http.createServer(async (request, response) => {
@@ -2316,6 +2890,16 @@ const server = http.createServer(async (request, response) => {
 
   if (request.method === "GET" && requestUrl.pathname === "/auth/me") {
     handleAuthMe(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && requestUrl.pathname === "/admin/accounts-preview") {
+    handleAdminAccountsPreview(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && requestUrl.pathname === "/admin/dashboard") {
+    handleAdminDashboard(request, response);
     return;
   }
 
@@ -2365,6 +2949,11 @@ const server = http.createServer(async (request, response) => {
 
     if (requestUrl.pathname === "/spectate") {
       handleSpectate(request, response, payload);
+      return;
+    }
+
+    if (requestUrl.pathname === "/admin/action") {
+      handleAdminAction(request, response, payload);
       return;
     }
   }
@@ -2460,6 +3049,7 @@ webSocketServer.on("connection", (socket, request) => {
 
       player.lastInputAt = Date.now();
       player.input = {
+        inputSeq: Number(message.inputSeq) || player.input.inputSeq || 0,
         x: Number(message.x) || 0,
         y: Number(message.y) || 0,
         boost: Boolean(message.boost),
@@ -2470,6 +3060,7 @@ webSocketServer.on("connection", (socket, request) => {
         pointerX: Number(message.pointerX),
         pointerY: Number(message.pointerY)
       };
+      player.lastInputSeq = player.input.inputSeq;
     } catch (error) {
       socket.send(JSON.stringify({ type: "error", message: "Bad input packet." }));
     }
