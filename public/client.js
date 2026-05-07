@@ -24,6 +24,7 @@ const registerStarterSkins = document.getElementById("registerStarterSkins");
 const guestStarterSkins = document.getElementById("guestStarterSkins");
 const enterArenaButton = document.getElementById("enterArenaButton");
 const spectateButton = document.getElementById("spectateButton");
+const openAdminDashboardButton = document.getElementById("openAdminDashboardButton");
 const logoutButton = document.getElementById("logoutButton");
 const adminRefreshButton = document.getElementById("adminRefreshButton");
 const adminTestBuildButton = document.getElementById("adminTestBuildButton");
@@ -232,6 +233,7 @@ const clientState = {
     lastAckInputSeq: 0,
     maxSentInputSeq: 0,
     lastPingSentAt: 0,
+    lastAckReceivedAt: 0,
     lastSnapshotReceivedAt: 0,
     lastSnapshotIntervalMs: 0,
     lastSnapshotSequence: 0
@@ -729,11 +731,28 @@ function recordSnapshotArrival(payload) {
   }
 
   if (typeof payload.ackInputSeq === "number") {
+    if (payload.ackInputSeq > clientState.network.lastAckInputSeq) {
+      clientState.network.lastAckReceivedAt = now;
+    }
     clientState.network.lastAckInputSeq = Math.max(clientState.network.lastAckInputSeq, payload.ackInputSeq);
   }
   const outstandingInputs = Math.max(0, clientState.network.maxSentInputSeq - clientState.network.lastAckInputSeq);
   const clientBufferedBytes = clientState.socket?.bufferedAmount || 0;
-  clientState.network.outLossPct = Math.min(100, outstandingInputs * 2.2 + clientBufferedBytes / 4096);
+  const ackAgeMs = clientState.network.lastAckReceivedAt > 0 ? now - clientState.network.lastAckReceivedAt : 0;
+  let outPressure = 0;
+  if (outstandingInputs > 2) {
+    outPressure += (outstandingInputs - 2) * 2.4;
+  }
+  if (ackAgeMs > 220) {
+    outPressure += (ackAgeMs - 220) / 30;
+  }
+  if (clientBufferedBytes > 4096) {
+    outPressure += (clientBufferedBytes - 4096) / 8192;
+  }
+  const nextOutLossPct = Math.max(0, Math.min(100, outPressure));
+  clientState.network.outLossPct = clientState.network.outLossPct
+    ? lerp(clientState.network.outLossPct, nextOutLossPct, 0.2)
+    : nextOutLossPct;
 }
 
 function sendPing() {
@@ -858,6 +877,7 @@ function renderProfileSummary() {
     <p>Unlocked skins: ${profile.ownedSkins.length} / ${Object.keys(SKINS).length}</p>
     <p>${progress}</p>
   `;
+  openAdminDashboardButton?.classList.toggle("hidden", !profile.isAdmin);
 }
 
 function renderAdminPanel() {
@@ -1354,6 +1374,10 @@ async function logout() {
   clientState.profile = null;
   clientState.adminDashboard = null;
   stopAdminDashboardPolling();
+  clientState.network.lastAckInputSeq = 0;
+  clientState.network.maxSentInputSeq = 0;
+  clientState.network.outLossPct = 0;
+  clientState.network.lastAckReceivedAt = 0;
   clientState.playerId = null;
   clientState.spectatorId = null;
   clientState.snapshot = null;
@@ -1385,6 +1409,10 @@ function returnToMainMenu() {
   clientState.pointerInitialized = false;
   clientState.lastSentInputSignature = "";
   clientState.lastSentInputAt = 0;
+  clientState.network.lastAckInputSeq = 0;
+  clientState.network.maxSentInputSeq = 0;
+  clientState.network.outLossPct = 0;
+  clientState.network.lastAckReceivedAt = 0;
   clientState.spectatorMode = false;
   clientState.spectatingFromDeath = false;
   clientState.spectatorFocusId = null;
@@ -1740,10 +1768,11 @@ function renderNetworkPanel() {
 
   const snapshot = clientState.snapshot;
   const onlinePlayers = snapshot?.config?.onlinePlayers ?? snapshot?.players?.length ?? 0;
+  const targetSnapRate = snapshot?.config?.broadcastRate ?? 0;
   networkPanel.textContent =
     `Ping ${Math.round(clientState.network.pingMs || 0)}ms` +
     ` | Jitter ${Math.round(clientState.network.jitterMs || 0)}ms` +
-    ` | Snap ${Math.round(clientState.network.snapshotsPerSecond || 0)}/s` +
+    ` | Snap ${Math.max(0, clientState.network.snapshotsPerSecond || 0).toFixed(1)}/${targetSnapRate}` +
     ` | In ${Math.max(0, clientState.network.inLossPct || 0).toFixed(1)}%` +
     ` | Out ${Math.max(0, clientState.network.outLossPct || 0).toFixed(1)}%` +
     ` | Online ${onlinePlayers}`;
@@ -1961,6 +1990,10 @@ function connectSocket(mode = "player") {
     clientState.network.lastSnapshotIntervalMs = 0;
     clientState.network.snapshotsPerSecond = 0;
     clientState.network.snapshotAgeMs = 0;
+    clientState.network.lastAckInputSeq = 0;
+    clientState.network.maxSentInputSeq = 0;
+    clientState.network.outLossPct = 0;
+    clientState.network.lastAckReceivedAt = performance.now();
     joinOverlay.classList.add("hidden");
     setStatus(
       mode === "spectator"
@@ -2017,6 +2050,8 @@ function connectSocket(mode = "player") {
     }
     clientState.connected = false;
     clientState.network.snapshotAgeMs = 0;
+    clientState.network.outLossPct = 0;
+    clientState.network.lastAckReceivedAt = 0;
     clientState.playerId = null;
     clientState.spectatorId = null;
     clientState.snapshot = null;
@@ -2163,6 +2198,9 @@ registerButton.addEventListener("click", registerAccount);
 loginButton.addEventListener("click", loginAccount);
 enterArenaButton.addEventListener("click", joinGame);
 spectateButton.addEventListener("click", startSpectating);
+openAdminDashboardButton?.addEventListener("click", () => {
+  window.location.href = "/admin";
+});
 logoutButton.addEventListener("click", logout);
 adminRefreshButton?.addEventListener("click", fetchAdminDashboard);
 adminTestBuildButton?.addEventListener("click", () => runAdminAction("apply_test_build"));

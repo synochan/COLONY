@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Colony.io Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Manrope:wght@500;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="admin-page">
+    <main class="admin-shell">
+      <section class="admin-page-header">
+        <div>
+          <p class="eyebrow">Colony.io Control</p>
+          <h1>Admin Dashboard</h1>
+          <p id="adminPageStatus" class="join-copy">Checking your admin session...</p>
+        </div>
+        <div class="admin-page-actions">
+          <a class="admin-action-link" href="/">Back To Game</a>
+          <button id="adminPageRefreshButton" type="button">Refresh</button>
+        </div>
+      </section>
+
+      <section id="adminPageAccess" class="admin-page-card">
+        <div id="adminPageAccessMessage" class="admin-empty">
+          <strong>Admin session required.</strong> Log in as the admin account from the main game page first.
+        </div>
+      </section>
+
+      <section id="adminPageDashboard" class="admin-page-grid hidden">
+        <section class="admin-page-card">
+          <h2>Quick Actions</h2>
+          <div class="controls admin-controls">
+            <button id="pageAdminTestBuildButton" type="button">Apply Test Build</button>
+            <button id="pageAdminGodModeButton" type="button" class="secondary-button">Toggle God Mode</button>
+            <button id="pageAdminHealButton" type="button" class="secondary-button">Heal & Refill</button>
+            <button id="pageAdminScoreButton" type="button" class="secondary-button">+5000 Score</button>
+            <button id="pageAdminWorkersButton" type="button" class="secondary-button">Spawn Workers</button>
+            <button id="pageAdminCooldownsButton" type="button" class="secondary-button">Reset Cooldowns</button>
+            <button id="pageAdminResetRoundButton" type="button" class="secondary-button">Reset Round</button>
+          </div>
+          <p class="admin-inline-note">Self-testing actions affect your live hive only if you are currently joined in the arena.</p>
+        </section>
+
+        <section class="admin-page-card">
+          <h2>Server & Network</h2>
+          <div id="pageAdminNetworkDashboard" class="admin-grid"></div>
+        </section>
+
+        <section class="admin-page-card admin-page-span-2">
+          <h2>Live Players</h2>
+          <div id="pageAdminPlayersDashboard" class="admin-list"></div>
+        </section>
+
+        <section class="admin-page-card admin-page-span-2">
+          <h2>Accounts</h2>
+          <div id="pageAdminAccountsDashboard" class="admin-list"></div>
+        </section>
+
+        <section class="admin-page-card">
+          <h2>Banned Guests</h2>
+          <div id="pageAdminGuestsDashboard" class="admin-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/admin.js"></script>
+  </body>
+</html>

@@ -123,6 +123,31 @@ body::before {
   max-height: min(62vh, 760px);
   overflow: auto;
 }
+
+.hud-howto {
+  width: min(286px, calc(100vw - 32px));
+  max-height: min(54vh, 620px);
+  padding: 12px 14px;
+}
+
+.hud-howto h2 {
+  font-size: 0.98rem;
+}
+
+.hud-howto .controls {
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.hud-howto .how-to-play span {
+  padding: 9px 10px;
+  font-size: 0.84rem;
+}
+
+.admin-hud {
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(62vh, 760px);
+}
 .hud-bottom-right {
   right: 16px;
   bottom: 16px;
@@ -310,15 +335,107 @@ body::before {
 
 .network-strip {
   color: rgba(255, 255, 255, 0.96);
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   font-weight: 800;
   line-height: 1.2;
   white-space: nowrap;
 }
 
+.admin-page {
+  overflow: auto;
+}
+
+.admin-shell {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.admin-page-header,
+.admin-page-card {
+  border: 1px solid var(--panel-line);
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+
+.admin-page-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  border-radius: 24px;
+  padding: 20px 22px;
+}
+
+.admin-page-header h1,
+.admin-page-card h2 {
+  margin: 0;
+  font-family: "Cinzel", serif;
+}
+
+.admin-page-header h1 {
+  font-size: 1.45rem;
+}
+
+.admin-page-card h2 {
+  font-size: 1rem;
+}
+
+.admin-page-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.admin-page-actions button,
+.admin-action-link {
+  border: 0;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #ffd36a, #ffb02e);
+  color: #23163e;
+  font: inherit;
+  font-weight: 900;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.admin-action-link {
+  display: inline-flex;
+  align-items: center;
+}
+
+.admin-page-card {
+  border-radius: 20px;
+  padding: 18px;
+}
+
+.admin-page-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.admin-page-span-2 {
+  grid-column: span 2;
+}
+
 @media (max-width: 960px) {
   .admin-grid {
     grid-template-columns: 1fr;
+  }
+
+  .admin-page-header {
+    flex-direction: column;
+  }
+
+  .admin-page-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-page-span-2 {
+    grid-column: span 1;
   }
 }
 

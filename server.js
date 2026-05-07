@@ -77,6 +77,7 @@ const RESOURCE_VIEW_PADDING = 1150;
 const RECENT_EVENTS_INTERVAL = 4;
 const RESOURCE_REFRESH_INTERVAL = 18;
 const LEADERBOARD_REFRESH_INTERVAL = 6;
+const SOCKET_HEARTBEAT_INTERVAL_MS = 25000;
 const ADMIN_STARTING_SCORE = 12000;
 const ADMIN_MIN_WORKERS = 8;
 
@@ -2157,6 +2158,35 @@ function buildSnapshotContext() {
   };
 }
 
+function viewerBoundsForPlayer(viewerPlayer) {
+  const halfWidth = Math.max(RESOURCE_VIEW_PADDING, viewerPlayer.commandRange * 2.65);
+  const halfHeight = Math.max(RESOURCE_VIEW_PADDING * 0.8, viewerPlayer.commandRange * 2.1);
+  return {
+    minX: viewerPlayer.x - halfWidth,
+    maxX: viewerPlayer.x + halfWidth,
+    minY: viewerPlayer.y - halfHeight,
+    maxY: viewerPlayer.y + halfHeight
+  };
+}
+
+function pointInsideBounds(x, y, bounds) {
+  return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
+}
+
+function playerIntersectsViewerBounds(player, bounds) {
+  if (pointInsideBounds(player.x, player.y, bounds)) {
+    return true;
+  }
+
+  for (const worker of player.workers) {
+    if (pointInsideBounds(worker.x, worker.y, bounds)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function resolveSpectatorFocusId(players, requestedPlayerId) {
   if (requestedPlayerId && players.some((player) => player.id === requestedPlayerId && player.alive)) {
     return requestedPlayerId;
@@ -2224,20 +2254,28 @@ function shouldRefreshResourcesForViewer(viewerState, viewerPlayer) {
   return Math.hypot(viewerPlayer.x - lastViewX, viewerPlayer.y - lastViewY) >= movementThreshold;
 }
 
-function snapshotPlayersForViewer(snapshotContext, playerId) {
-  if (!playerId) {
+function snapshotPlayersForViewer(snapshotContext, viewerPlayer, playerId, focusPlayerId = null) {
+  if (!viewerPlayer) {
     return snapshotContext.publicPlayers;
   }
 
-  const player = state.players.get(playerId);
-  const playerIndex = snapshotContext.publicPlayersById.get(playerId)?.index;
-  if (!player || playerIndex === undefined) {
-    return snapshotContext.publicPlayers;
+  const bounds = viewerBoundsForPlayer(viewerPlayer);
+  const nextPlayers = [];
+
+  for (let index = 0; index < snapshotContext.players.length; index += 1) {
+    const rawPlayer = snapshotContext.players[index];
+    if (!playerIntersectsViewerBounds(rawPlayer, bounds) && rawPlayer.id !== playerId && rawPlayer.id !== focusPlayerId) {
+      continue;
+    }
+
+    if (rawPlayer.id === playerId) {
+      nextPlayers.push(serializePlayerForSelf(rawPlayer));
+    } else {
+      nextPlayers.push(snapshotContext.publicPlayers[index]);
+    }
   }
 
-  const players = snapshotContext.publicPlayers.slice();
-  players[playerIndex] = serializePlayerForSelf(player);
-  return players;
+  return nextPlayers;
 }
 
 function snapshotForViewer({
@@ -2249,10 +2287,11 @@ function snapshotForViewer({
   snapshotContext = null
 } = {}) {
   const resolvedContext = snapshotContext || buildSnapshotContext();
-  const players = snapshotPlayersForViewer(resolvedContext, spectatorMode ? null : playerId);
   const profileSession = sessionToken ? getSessionByToken(sessionToken) : state.players.get(playerId) ? getSessionByToken(state.players.get(playerId).sessionToken) : null;
-  const resolvedFocusId = spectatorMode ? resolveSpectatorFocusId(players, spectatorFocusId) : null;
+  const fullPlayerList = resolvedContext.publicPlayers;
+  const resolvedFocusId = spectatorMode ? resolveSpectatorFocusId(fullPlayerList, spectatorFocusId) : null;
   const resourceViewPlayer = resourceViewStateForViewer({ playerId, spectatorMode, spectatorFocusId: resolvedFocusId });
+  const players = snapshotPlayersForViewer(resolvedContext, resourceViewPlayer, spectatorMode ? null : playerId, resolvedFocusId);
   const includeResources =
     shouldRefreshResourcesForViewer(viewerState, resourceViewPlayer) || broadcastSequence % RESOURCE_REFRESH_INTERVAL === 0;
   const includeLeaderboard = !viewerState || viewerState.leaderboardVersion !== state.leaderboardVersion || broadcastSequence % LEADERBOARD_REFRESH_INTERVAL === 0;
@@ -2495,10 +2534,14 @@ function handleAdminAction(request, response, payload) {
   }
 
   const player = Array.from(state.players.values()).find((entry) => entry.sessionToken === admin.session.token);
-  if (!player) {
-    sendJson(response, 409, { error: "Join the arena first to use admin controls." });
-    return;
-  }
+  const adminActorName = player?.name || admin.account.username || "admin";
+  const requireLiveAdminPlayer = () => {
+    if (player) {
+      return player;
+    }
+    sendJson(response, 409, { error: "Join the arena first to use that self-testing admin action." });
+    return null;
+  };
 
   const action = String(payload.action || "");
   const targetPlayerId = String(payload.targetPlayerId || "");
@@ -2516,7 +2559,7 @@ function handleAdminAction(request, response, payload) {
     if (state.players.has(targetPlayer.id)) {
       state.players.delete(targetPlayer.id);
       bumpLeaderboardVersion();
-      pushEvent("admin_kick", { admin: player.name, target: targetPlayer.name });
+      pushEvent("admin_kick", { admin: adminActorName, target: targetPlayer.name });
     }
     return true;
   };
@@ -2539,7 +2582,7 @@ function handleAdminAction(request, response, payload) {
         kickPlayer(targetPlayer, "Banned by admin");
       }
     }
-    pushEvent("admin_ban", { admin: player.name, target: account.username });
+    pushEvent("admin_ban", { admin: adminActorName, target: account.username });
     return true;
   };
 
@@ -2563,7 +2606,7 @@ function handleAdminAction(request, response, payload) {
         kickPlayer(targetPlayer, "Guest banned by admin");
       }
     }
-    pushEvent("admin_ban_guest", { admin: player.name, target: normalized });
+    pushEvent("admin_ban_guest", { admin: adminActorName, target: normalized });
     return true;
   };
 
@@ -2575,7 +2618,7 @@ function handleAdminAction(request, response, payload) {
     delete account.bannedAt;
     delete account.banReason;
     scheduleAccountSave();
-    pushEvent("admin_unban", { admin: player.name, target: account.username });
+    pushEvent("admin_unban", { admin: adminActorName, target: account.username });
     return true;
   };
 
@@ -2585,34 +2628,58 @@ function handleAdminAction(request, response, payload) {
     accountStore.bannedGuests = (accountStore.bannedGuests || []).filter((entry) => entry !== normalized);
     if (accountStore.bannedGuests.length !== before) {
       scheduleAccountSave();
-      pushEvent("admin_unban_guest", { admin: player.name, target: normalized });
+      pushEvent("admin_unban_guest", { admin: adminActorName, target: normalized });
       return true;
     }
     return false;
   };
 
   if (action === "toggle_god_mode") {
-    player.adminState.godMode = !player.adminState.godMode;
+    const liveAdminPlayer = requireLiveAdminPlayer();
+    if (!liveAdminPlayer) {
+      return;
+    }
+    liveAdminPlayer.adminState.godMode = !liveAdminPlayer.adminState.godMode;
   } else if (action === "apply_test_build") {
-    applyAdminLoadout(player, { score: ADMIN_STARTING_SCORE });
+    const liveAdminPlayer = requireLiveAdminPlayer();
+    if (!liveAdminPlayer) {
+      return;
+    }
+    applyAdminLoadout(liveAdminPlayer, { score: ADMIN_STARTING_SCORE });
   } else if (action === "heal_refill") {
-    refreshPlayerDerivedStats(player);
-    player.health = player.healthMax;
-    player.eggs = player.maxEggs;
-    for (const worker of player.workers) {
+    const liveAdminPlayer = requireLiveAdminPlayer();
+    if (!liveAdminPlayer) {
+      return;
+    }
+    refreshPlayerDerivedStats(liveAdminPlayer);
+    liveAdminPlayer.health = liveAdminPlayer.healthMax;
+    liveAdminPlayer.eggs = liveAdminPlayer.maxEggs;
+    for (const worker of liveAdminPlayer.workers) {
       worker.health = worker.healthMax;
     }
   } else if (action === "add_score") {
-    grantScore(player, Number(payload.amount) || 5000);
-  } else if (action === "spawn_workers") {
-    const spawnCount = clamp(Number(payload.amount) || 4, 1, 12);
-    for (let index = 0; index < spawnCount && player.workers.length < player.maxWorkers; index += 1) {
-      player.workers.push(createWorker(player));
+    const liveAdminPlayer = requireLiveAdminPlayer();
+    if (!liveAdminPlayer) {
+      return;
     }
-    applyAdminLoadout(player, { score: player.score });
+    grantScore(liveAdminPlayer, Number(payload.amount) || 5000);
+  } else if (action === "spawn_workers") {
+    const liveAdminPlayer = requireLiveAdminPlayer();
+    if (!liveAdminPlayer) {
+      return;
+    }
+    const spawnCount = clamp(Number(payload.amount) || 4, 1, 12);
+    for (let index = 0; index < spawnCount && liveAdminPlayer.workers.length < liveAdminPlayer.maxWorkers; index += 1) {
+      liveAdminPlayer.workers.push(createWorker(liveAdminPlayer));
+    }
+    applyAdminLoadout(liveAdminPlayer, { score: liveAdminPlayer.score });
   } else if (action === "reset_cooldowns") {
-    player.mergeCooldownUntil = 0;
-    player.splitCooldownUntil = 0;
+    const liveAdminPlayer = requireLiveAdminPlayer();
+    if (!liveAdminPlayer) {
+      return;
+    }
+    liveAdminPlayer.mergeCooldownUntil = 0;
+    liveAdminPlayer.splitCooldownUntil = 0;
   } else if (action === "kick_player") {
     if (!kickPlayer(findTargetPlayer())) {
       sendJson(response, 400, { error: "Unable to kick that player." });
@@ -2657,7 +2724,12 @@ function handleAdminAction(request, response, payload) {
       return;
     }
     targetPlayer.health = 0;
-    collapsePlayer(player, targetPlayer);
+    targetPlayer.alive = false;
+    targetPlayer.respawnTimer = 3;
+    targetPlayer.workers = [];
+    targetPlayer.score = Math.max(0, targetPlayer.score * 0.65);
+    bumpLeaderboardVersion();
+    pushEvent("admin_collapse", { admin: adminActorName, target: targetPlayer.name });
   } else if (action === "reset_round") {
     startNextRound();
   } else {
@@ -2669,7 +2741,7 @@ function handleAdminAction(request, response, payload) {
     ok: true,
     profile: buildProfileForSession(admin.session),
     adminState: {
-      godMode: Boolean(player.adminState?.godMode)
+      godMode: Boolean(player?.adminState?.godMode)
     },
     dashboard: adminDashboardPayload()
   });
@@ -2903,6 +2975,11 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && requestUrl.pathname === "/admin") {
+    serveFile(path.join(PUBLIC_DIR, "admin.html"), response);
+    return;
+  }
+
   if (request.method === "POST") {
     const bodyBuffer = await readBody(request).catch(() => null);
     const payload = bodyBuffer ? parseJsonSafe(bodyBuffer.toString("utf8") || "{}") : null;
@@ -2972,9 +3049,33 @@ const server = http.createServer(async (request, response) => {
 
 const webSocketServer = new WebSocketServer({ server, perMessageDeflate: false });
 
+function markSocketAlive() {
+  this.isAlive = true;
+}
+
+const socketHeartbeatTimer = setInterval(() => {
+  for (const socket of webSocketServer.clients) {
+    if (socket.isAlive === false) {
+      socket.terminate();
+      continue;
+    }
+
+    socket.isAlive = false;
+    try {
+      socket.ping();
+    } catch {}
+  }
+}, SOCKET_HEARTBEAT_INTERVAL_MS);
+
+webSocketServer.on("close", () => {
+  clearInterval(socketHeartbeatTimer);
+});
+
 webSocketServer.on("connection", (socket, request) => {
   socket._socket?.setNoDelay(true);
   socket._socket?.setKeepAlive(true, 30000);
+  socket.isAlive = true;
+  socket.on("pong", markSocketAlive);
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
   const playerId = requestUrl.searchParams.get("playerId");
   const spectatorId = requestUrl.searchParams.get("spectatorId");
