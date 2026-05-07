@@ -61,6 +61,7 @@ const WORKER_SPLIT_FOOD_LOSS = 2;
 const WORKER_HATCH_SPAWN_DISTANCE = 84;
 const WORKER_HATCH_BOUNCE_SPEED = 148;
 const WORKER_SPLIT_BOUNCE_SPEED = 176;
+const WORKER_BOOST_SPEED_BONUS_PCT = 0.12;
 const WORKER_PICKOFF_SCORE_REWARD = 12;
 const COLONY_KILL_SCORE_REWARD = 58;
 
@@ -557,7 +558,8 @@ function workerSpeed(worker, owner) {
   const base = clamp(WORKER_BASE_SPEED - sizePenalty, WORKER_MIN_SPEED, WORKER_BASE_SPEED);
   const workerSpeedBonus = owner?.buffState?.workerSpeedBonusPct || 0;
   const raidSpeedBonus = worker.mode === "raid" ? owner?.buffState?.raidSpeedBonusPct || 0 : 0;
-  return base * (1 + workerSpeedBonus + raidSpeedBonus);
+  const boostSpeedBonus = owner?.isBoosting ? WORKER_BOOST_SPEED_BONUS_PCT : 0;
+  return base * (1 + workerSpeedBonus + raidSpeedBonus + boostSpeedBonus);
 }
 
 function workerMaxHealth(worker, owner) {
@@ -1086,6 +1088,7 @@ function createPlayer(identity) {
       pointerY: spawnPoint.y
     },
     isAttacking: false,
+    isBoosting: false,
     mergeCooldownUntil: 0,
     splitCooldownUntil: 0,
     commandPoint: { x: spawnPoint.x, y: spawnPoint.y },
@@ -1327,6 +1330,7 @@ function resetPlayer(player) {
   player.knockbackY = 0;
   player.spawnGraceUntil = Date.now() + SPAWN_GRACE_MS;
   player.respawnTimer = 0;
+  player.isBoosting = false;
   player.mergeCooldownUntil = 0;
   player.splitCooldownUntil = 0;
   player.alive = true;
@@ -1715,6 +1719,7 @@ function updatePlayer(player, deltaSeconds) {
   }
 
   if (!player.alive) {
+    player.isBoosting = false;
     player.respawnTimer = Math.max(0, player.respawnTimer - deltaSeconds);
     if (player.respawnTimer === 0) {
       resetPlayer(player);
@@ -1733,6 +1738,7 @@ function updatePlayer(player, deltaSeconds) {
   const move = normalize(input.x, input.y);
   const baseSpeed = playerSpeedForRadius(player.radius, player);
   const isBoosting = Boolean(input.boost) && player.score > 1;
+  player.isBoosting = isBoosting;
   const speed = baseSpeed + (isBoosting ? BOOST_BONUS : 0);
 
   player.x += move.x * speed * deltaSeconds + player.knockbackX * deltaSeconds;
