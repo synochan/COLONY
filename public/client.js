@@ -178,6 +178,8 @@ const WORKER_RANGE_VIEW_MULTIPLIER = 2;
 const ENTITY_SMOOTHING = 0.22;
 const CAMERA_SMOOTHING = 0.2;
 const ZOOM_SMOOTHING = 0.12;
+const INPUT_SEND_INTERVAL_MS = 33;
+const PING_INTERVAL_MS = 2000;
 
 const clientState = {
   authToken: localStorage.getItem(AUTH_TOKEN_KEY) || "",
@@ -197,6 +199,17 @@ const clientState = {
   camera: { x: 0, y: 0, zoom: BASE_WORLD_ZOOM },
   worldPointer: { x: 0, y: 0 },
   pointerInitialized: false,
+  pingTimer: null,
+  network: {
+    pingMs: 0,
+    jitterMs: 0,
+    snapshotsPerSecond: 0,
+    snapshotAgeMs: 0,
+    clockOffsetMs: 0,
+    lastPingSentAt: 0,
+    lastSnapshotReceivedAt: 0,
+    lastSnapshotIntervalMs: 0
+  },
   registerStarterSkin: STARTER_SKINS[0],
   guestStarterSkin: STARTER_SKINS[0]
 };
@@ -592,6 +605,65 @@ function updatePointerFromEvent(event) {
   clientState.pointerInitialized = true;
 }
 
+function recordSnapshotArrival(payload) {
+  const now = performance.now();
+  const previousAt = clientState.network.lastSnapshotReceivedAt;
+  if (previousAt > 0) {
+    const interval = now - previousAt;
+    clientState.network.lastSnapshotIntervalMs = interval;
+    const snapshotsPerSecond = interval > 0 ? 1000 / interval : 0;
+    clientState.network.snapshotsPerSecond = clientState.network.snapshotsPerSecond
+      ? lerp(clientState.network.snapshotsPerSecond, snapshotsPerSecond, 0.28)
+      : snapshotsPerSecond;
+    const previousInterval = clientState.network.jitterMs;
+    const intervalJitter = Math.abs(interval - (1000 / Math.max(1, payload.config?.broadcastRate || 1)));
+    clientState.network.jitterMs = previousInterval
+      ? lerp(previousInterval, intervalJitter, 0.24)
+      : intervalJitter;
+  }
+
+  clientState.network.lastSnapshotReceivedAt = now;
+  clientState.network.snapshotAgeMs = 0;
+  if (payload.serverTime) {
+    const offset = Date.now() - payload.serverTime;
+    clientState.network.clockOffsetMs = clientState.network.clockOffsetMs
+      ? lerp(clientState.network.clockOffsetMs, offset, 0.2)
+      : offset;
+  }
+}
+
+function sendPing() {
+  if (!clientState.socket || clientState.socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  const clientTime = Date.now();
+  clientState.network.lastPingSentAt = clientTime;
+  clientState.socket.send(
+    JSON.stringify({
+      type: "ping",
+      clientTime
+    })
+  );
+}
+
+function handlePong(payload) {
+  const now = Date.now();
+  const roundTripMs = Math.max(0, now - (Number(payload.clientTime) || now));
+  const previousPing = clientState.network.pingMs;
+  clientState.network.pingMs = previousPing ? lerp(previousPing, roundTripMs, 0.35) : roundTripMs;
+  const delta = previousPing ? Math.abs(roundTripMs - previousPing) : 0;
+  clientState.network.jitterMs = clientState.network.jitterMs
+    ? lerp(clientState.network.jitterMs, delta, 0.2)
+    : delta;
+  if (payload.serverTime) {
+    const offset = now - roundTripMs / 2 - payload.serverTime;
+    clientState.network.clockOffsetMs = clientState.network.clockOffsetMs
+      ? lerp(clientState.network.clockOffsetMs, offset, 0.2)
+      : offset;
+  }
+}
+
 async function apiRequest(path, options = {}) {
   const headers = {
     "Content-Type": "application/json"
@@ -922,6 +994,10 @@ async function logout() {
   if (clientState.socket) {
     clientState.socket.close();
   }
+  if (clientState.pingTimer) {
+    clearInterval(clientState.pingTimer);
+    clientState.pingTimer = null;
+  }
 
   clearToken();
   clientState.profile = null;
@@ -940,6 +1016,10 @@ async function logout() {
 function returnToMainMenu() {
   if (clientState.socket) {
     clientState.socket.close();
+  }
+  if (clientState.pingTimer) {
+    clearInterval(clientState.pingTimer);
+    clientState.pingTimer = null;
   }
 
   clientState.connected = false;
@@ -1298,6 +1378,7 @@ function renderOverlay() {
   const roundedRadius = Math.round(you.radius || 0);
   const roundedCommand = Math.round(you.commandRange || 0);
   const matchProgress = you.matchXpForNextLevel ? `${Math.round(you.matchXpIntoLevel || 0)}/${Math.round(you.matchXpForNextLevel)}` : "Max";
+  const networkLine = `Ping ${Math.round(clientState.network.pingMs || 0)}ms | Jitter ${Math.round(clientState.network.jitterMs || 0)}ms | Snap ${Math.round(clientState.network.snapshotsPerSecond || 0)}/s`;
   const hudLeft = 20;
   const hudTop = 196;
   context.fillStyle = "rgba(255,255,255,0.92)";
@@ -1329,9 +1410,10 @@ function renderOverlay() {
       context.fillText(`Next card reward at Run Lv ${you.nextCardRewardLevel}`, hudLeft, hudTop + 88);
     }
   }
+  context.fillText(networkLine, hudLeft, hudTop + 110);
   context.fillText("Large green circles can be eaten by your hive or by workers that grow large enough.", hudLeft, hudTop + 132);
   if (round) {
-    context.fillText(`Round ${round.number} | Target ${currentSnapshot().config.roundScoreTarget} score`, hudLeft, hudTop + 110);
+    context.fillText(`Round ${round.number} | Target ${currentSnapshot().config.roundScoreTarget} score`, hudLeft, hudTop + 154);
   }
 
   if (round?.status === "ended") {
@@ -1374,6 +1456,9 @@ function renderOverlay() {
 function drawFrame() {
   renderBackground();
   reconcileRenderSnapshot();
+  if (clientState.network.lastSnapshotReceivedAt > 0) {
+    clientState.network.snapshotAgeMs = Math.max(0, performance.now() - clientState.network.lastSnapshotReceivedAt);
+  }
 
   const snapshot = clientState.renderSnapshot || clientState.snapshot;
   if (snapshot) {
@@ -1460,6 +1545,10 @@ function connectSocket(mode = "player") {
 
   clientState.socket.addEventListener("open", () => {
     clientState.connected = true;
+    clientState.network.lastSnapshotReceivedAt = 0;
+    clientState.network.lastSnapshotIntervalMs = 0;
+    clientState.network.snapshotsPerSecond = 0;
+    clientState.network.snapshotAgeMs = 0;
     joinOverlay.classList.add("hidden");
     setStatus(
       mode === "spectator"
@@ -1468,11 +1557,21 @@ function connectSocket(mode = "player") {
     );
     enterArenaButton.disabled = false;
     spectateButton.disabled = false;
+    if (clientState.pingTimer) {
+      clearInterval(clientState.pingTimer);
+    }
+    clientState.pingTimer = setInterval(sendPing, PING_INTERVAL_MS);
+    sendPing();
   });
 
   clientState.socket.addEventListener("message", (event) => {
     const payload = JSON.parse(event.data);
+    if (payload.type === "pong") {
+      handlePong(payload);
+      return;
+    }
     if (payload.type === "state") {
+      recordSnapshotArrival(payload);
       clientState.snapshot = payload;
       clientState.spectatorMode = Boolean(payload.spectator?.active);
       if (payload.spectator?.focusPlayerId && !clientState.spectatingFromDeath) {
@@ -1494,7 +1593,12 @@ function connectSocket(mode = "player") {
   });
 
   clientState.socket.addEventListener("close", () => {
+    if (clientState.pingTimer) {
+      clearInterval(clientState.pingTimer);
+      clientState.pingTimer = null;
+    }
     clientState.connected = false;
+    clientState.network.snapshotAgeMs = 0;
     clientState.playerId = null;
     clientState.spectatorId = null;
     clientState.snapshot = null;
@@ -1683,5 +1787,5 @@ resizeCanvas();
 switchAuthMode("guest");
 renderAuthState();
 restoreSession();
-setInterval(sendInput, 50);
+setInterval(sendInput, INPUT_SEND_INTERVAL_MS);
 requestAnimationFrame(drawFrame);

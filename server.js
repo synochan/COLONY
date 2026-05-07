@@ -16,8 +16,8 @@ const MAP_WIDTH = 8200;
 const MAP_HEIGHT = 5200;
 const FOOD_TARGET = 720;
 const GROWTH_NODE_TARGET = 42;
-const TICK_RATE = 30;
-const BROADCAST_RATE = 30;
+const TICK_RATE = 36;
+const BROADCAST_RATE = 36;
 const MAX_PLAYERS = 30;
 const MIN_PLAYERS = 2;
 const INPUT_TIMEOUT_MS = 5000;
@@ -67,6 +67,9 @@ const WORKER_SPLIT_BOUNCE_SPEED = 176;
 const WORKER_BOOST_SPEED_BONUS_PCT = 0.12;
 const WORKER_PICKOFF_SCORE_REWARD = 12;
 const COLONY_KILL_SCORE_REWARD = 58;
+const HIVE_SCORE_STEAL_PCT = 0.42;
+const HIVE_SCORE_STEAL_MIN = 30;
+const HIVE_SCORE_STEAL_CAP = 780;
 
 const STARTER_SKINS = ["ember", "tide", "moss"];
 const LEVEL_SKIN_UNLOCKS = [
@@ -1355,10 +1358,16 @@ function collapsePlayer(attacker, victim) {
   victim.respawnTimer = 3;
   victim.workers = [];
   victim.health = 0;
+  const stolenScore = clamp(victim.score * HIVE_SCORE_STEAL_PCT, HIVE_SCORE_STEAL_MIN, HIVE_SCORE_STEAL_CAP);
   attacker.health = clamp(attacker.health + 20, 0, attacker.healthMax);
   grantScore(attacker, COLONY_KILL_SCORE_REWARD);
+  grantScore(attacker, stolenScore);
   incrementAccountStat(attacker, "totalKills");
-  pushEvent("colony_down", { attacker: attacker.name, victim: victim.name });
+  pushEvent("colony_down", {
+    attacker: attacker.name,
+    victim: victim.name,
+    stolenScore: Math.round(stolenScore)
+  });
 }
 
 function isSpawnProtected(player) {
@@ -1908,7 +1917,9 @@ function snapshotForViewer({ playerId = null, sessionToken = "", spectatorMode =
       mapHeight: MAP_HEIGHT,
       minPlayers: MIN_PLAYERS,
       maxPlayers: MAX_PLAYERS,
-      roundScoreTarget: ROUND_SCORE_TARGET
+      roundScoreTarget: ROUND_SCORE_TARGET,
+      tickRate: TICK_RATE,
+      broadcastRate: BROADCAST_RATE
     },
     players,
     foods: state.foods,
@@ -2328,6 +2339,23 @@ webSocketServer.on("connection", (socket, request) => {
     socket.send(JSON.stringify({ type: "welcome", spectatorId: spectator.id, spectating: true }));
     socket.send(JSON.stringify(snapshotForViewer({ sessionToken: spectator.sessionToken, spectatorMode: true })));
 
+    socket.on("message", (rawMessage) => {
+      try {
+        const message = JSON.parse(rawMessage.toString("utf8"));
+        if (message.type !== "ping") {
+          return;
+        }
+
+        socket.send(
+          JSON.stringify({
+            type: "pong",
+            clientTime: Number(message.clientTime) || 0,
+            serverTime: Date.now()
+          })
+        );
+      } catch {}
+    });
+
     socket.on("close", () => {
       state.spectators.delete(spectator.id);
     });
@@ -2348,6 +2376,17 @@ webSocketServer.on("connection", (socket, request) => {
   socket.on("message", (rawMessage) => {
     try {
       const message = JSON.parse(rawMessage.toString("utf8"));
+      if (message.type === "ping") {
+        socket.send(
+          JSON.stringify({
+            type: "pong",
+            clientTime: Number(message.clientTime) || 0,
+            serverTime: Date.now()
+          })
+        );
+        return;
+      }
+
       if (message.type !== "input") {
         return;
       }
