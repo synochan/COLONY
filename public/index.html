@@ -17,9 +17,16 @@
       <canvas id="gameCanvas"></canvas>
 
       <section class="hud hud-top-left">
-        <p class="eyebrow">Colony.io</p>
-        <h1>Grow, Command, Overwhelm</h1>
-        <p id="statusText" class="status-text">Create an account or jump in as a guest, then build your colony and outgrow the hive around you.</p>
+        <h2>How To Play</h2>
+        <div class="controls how-to-play">
+          <span><strong>WASD</strong> move your colony core around the map</span>
+          <span><strong>Mouse</strong> aim your worker swarm and extend your control range</span>
+          <span><strong>Space</strong> hatch a new worker when you have eggs</span>
+          <span><strong>Q</strong> merge 2 workers into 1 stronger worker</span>
+          <span><strong>F</strong> split 1 large worker into 2 smaller faster workers</span>
+          <span><strong>Left Click</strong> hold to send workers into raid mode and direct them</span>
+          <span><strong>Shift</strong> burst forward by spending score instead of health</span>
+        </div>
         <div id="playerStats" class="stat-stack"></div>
       </section>
 
@@ -29,15 +36,38 @@
       </section>
 
       <section class="hud hud-bottom-right">
-        <h2>How To Play</h2>
-        <div class="controls">
-          <span><strong>WASD</strong> move your colony core around the map</span>
-          <span><strong>Mouse</strong> aim your worker swarm and extend your control range</span>
-          <span><strong>Space</strong> hatch a new worker when you have eggs</span>
-          <span><strong>Q</strong> merge 2 workers into 1 stronger worker</span>
-          <span><strong>F</strong> split 1 large worker into 2 smaller faster workers</span>
-          <span><strong>Left Click</strong> hold to send workers into raid mode and direct them</span>
-          <span><strong>Shift</strong> burst forward by spending score instead of health</span>
+        <div id="networkPanel" class="network-strip"></div>
+      </section>
+
+      <section id="adminPanel" class="hud hud-bottom-left hidden">
+        <h2>Admin Panel</h2>
+        <div class="controls admin-controls">
+          <button id="adminRefreshButton" type="button">Refresh Dashboard</button>
+          <button id="adminTestBuildButton" type="button">Apply Test Build</button>
+          <button id="adminGodModeButton" type="button" class="secondary-button">Toggle God Mode</button>
+          <button id="adminHealButton" type="button" class="secondary-button">Heal & Refill</button>
+          <button id="adminScoreButton" type="button" class="secondary-button">+5000 Score</button>
+          <button id="adminWorkersButton" type="button" class="secondary-button">Spawn Workers</button>
+          <button id="adminCooldownsButton" type="button" class="secondary-button">Reset Cooldowns</button>
+          <button id="adminResetRoundButton" type="button" class="secondary-button">Reset Round</button>
+        </div>
+        <div class="admin-dashboard">
+          <section class="admin-section">
+            <h3>Server & Network</h3>
+            <div id="adminNetworkDashboard" class="admin-grid"></div>
+          </section>
+          <section class="admin-section">
+            <h3>Live Players</h3>
+            <div id="adminPlayersDashboard" class="admin-list"></div>
+          </section>
+          <section class="admin-section">
+            <h3>Accounts</h3>
+            <div id="adminAccountsDashboard" class="admin-list"></div>
+          </section>
+          <section class="admin-section">
+            <h3>Banned Guests</h3>
+            <div id="adminGuestsDashboard" class="admin-list"></div>
+          </section>
         </div>
       </section>
 
