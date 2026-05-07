@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Colony.io</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Manrope:wght@500;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="game-shell">
+      <canvas id="gameCanvas"></canvas>
+
+      <section class="hud hud-top-left">
+        <p class="eyebrow">Colony.io</p>
+        <h1>Grow, Command, Overwhelm</h1>
+        <p id="statusText" class="status-text">Create an account or jump in as a guest, then build your colony and outgrow the hive around you.</p>
+        <div id="playerStats" class="stat-stack"></div>
+      </section>
+
+      <section class="hud hud-top-right">
+        <h2>Leaderboard</h2>
+        <ol id="leaderboard" class="leaderboard"></ol>
+      </section>
+
+      <section class="hud hud-bottom-right">
+        <h2>How To Play</h2>
+        <div class="controls">
+          <span><strong>WASD</strong> move your colony core around the map</span>
+          <span><strong>Mouse</strong> aim your worker swarm and extend your control range</span>
+          <span><strong>Space</strong> hatch a new worker when you have eggs</span>
+          <span><strong>Q</strong> merge 2 workers into 1 stronger worker</span>
+          <span><strong>E</strong> send workers into raid mode to pressure enemies</span>
+          <span><strong>Shift</strong> burst forward by spending score instead of health</span>
+        </div>
+      </section>
+
+      <section id="joinOverlay" class="join-overlay">
+        <div class="join-card">
+          <p class="eyebrow">Welcome To Colony.io</p>
+          <h2>Choose Your Hive</h2>
+          <p class="join-copy">
+            Start with an account to level up your hive, unlock skins, claim card buffs, and keep your progress, or enter as a guest for a quick match.
+          </p>
+
+          <div id="authMessage" class="auth-message"></div>
+
+          <div id="authUnauthed">
+            <div class="auth-tabs">
+              <button type="button" data-auth-mode="guest" class="tab-button active">Guest</button>
+              <button type="button" data-auth-mode="register" class="tab-button">Register</button>
+              <button type="button" data-auth-mode="login" class="tab-button">Login</button>
+            </div>
+
+            <div id="guestPanel" class="auth-panel">
+              <label for="guestNameInput">Guest name</label>
+              <input id="guestNameInput" maxlength="16" placeholder="Guest name" value="Guest Hive" />
+              <p class="panel-label">Starter skin</p>
+              <div id="guestStarterSkins" class="skin-grid compact"></div>
+              <button id="guestButton" type="button">Continue As Guest</button>
+            </div>
+
+            <div id="registerPanel" class="auth-panel hidden">
+              <label for="registerNameInput">Username</label>
+              <input id="registerNameInput" maxlength="16" placeholder="Create username" />
+              <label for="registerPasswordInput">Password</label>
+              <input id="registerPasswordInput" type="password" maxlength="32" placeholder="Create password" />
+              <p class="panel-label">Choose 1 of your 3 free starter skins</p>
+              <div id="registerStarterSkins" class="skin-grid compact"></div>
+              <button id="registerButton" type="button">Create Account</button>
+            </div>
+
+            <div id="loginPanel" class="auth-panel hidden">
+              <label for="loginNameInput">Username</label>
+              <input id="loginNameInput" maxlength="16" placeholder="Username" />
+              <label for="loginPasswordInput">Password</label>
+              <input id="loginPasswordInput" type="password" maxlength="32" placeholder="Password" />
+              <button id="loginButton" type="button">Login</button>
+            </div>
+          </div>
+
+          <div id="authAuthed" class="hidden">
+            <div id="profileSummary" class="profile-summary"></div>
+            <p class="panel-label">Available skins</p>
+            <div id="ownedSkinGrid" class="skin-grid"></div>
+            <div class="auth-actions">
+              <button id="enterArenaButton" type="button">Play Now</button>
+              <button id="logoutButton" type="button" class="secondary-button">Log Out</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="cardChoiceOverlay" class="card-choice-overlay hidden">
+        <div class="card-choice-panel">
+          <p class="eyebrow">Hive Upgrade</p>
+          <h2 id="cardChoiceTitle">Choose 1 of 3 cards</h2>
+          <p id="cardChoiceText" class="join-copy">
+            Reach key hive levels to lock in a permanent buff for this account.
+          </p>
+          <div id="cardChoiceGrid" class="card-choice-grid"></div>
+          <p id="cardChoiceHint" class="card-choice-hint"></p>
+        </div>
+      </section>
+    </main>
+
+    <script src="/client.js"></script>
+  </body>
+</html>
