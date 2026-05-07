@@ -110,6 +110,8 @@ body::before {
   top: 16px;
   right: 16px;
   width: min(280px, calc(100vw - 32px));
+  max-height: min(72vh, 760px);
+  overflow: auto;
 }
 
 .hud-bottom-left {
@@ -194,7 +196,7 @@ body::before {
   display: grid;
   place-items: center;
   padding: 16px;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .join-overlay.hidden,
@@ -343,6 +345,7 @@ body::before {
 .card-tag {
   display: inline-flex;
   align-items: center;
+  gap: 8px;
   min-height: 30px;
   padding: 6px 10px;
   border-radius: 999px;
@@ -350,6 +353,13 @@ body::before {
   background: rgba(255, 255, 255, 0.07);
   font-size: 0.76rem;
   font-weight: 800;
+}
+
+.card-tag-art {
+  width: 26px;
+  height: 36px;
+  border-radius: 8px;
+  flex: 0 0 auto;
 }
 
 .card-tag.uncommon,
@@ -402,7 +412,7 @@ body::before {
 
 .auth-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   margin-top: 16px;
 }
@@ -436,6 +446,19 @@ body::before {
   padding: 18px;
   text-align: left;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.card-choice-art {
+  width: 96px;
+  height: 134px;
+  border-radius: 16px;
+  justify-self: center;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+  pointer-events: none;
 }
 
 .card-choice strong {

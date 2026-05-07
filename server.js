@@ -9,16 +9,19 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = path.join(__dirname, "data");
 const ACCOUNTS_FILE = path.join(DATA_DIR, "accounts.json");
 
-const MAP_WIDTH = 4200;
-const MAP_HEIGHT = 2600;
-const FOOD_TARGET = 320;
-const TICK_RATE = 20;
-const BROADCAST_RATE = 20;
+const MAP_WIDTH = 8200;
+const MAP_HEIGHT = 5200;
+const FOOD_TARGET = 720;
+const GROWTH_NODE_TARGET = 42;
+const TICK_RATE = 30;
+const BROADCAST_RATE = 30;
 const MAX_PLAYERS = 30;
 const MIN_PLAYERS = 2;
 const INPUT_TIMEOUT_MS = 5000;
-const ROUND_SCORE_TARGET = 1000;
+const ROUND_SCORE_TARGET = 20000;
+const LEADERBOARD_SIZE = 15;
 const ROUND_END_DELAY_MS = 6500;
+const SPAWN_GRACE_MS = 2500;
 
 const PLAYER_BASE_RADIUS = 24;
 const PLAYER_MAX_RADIUS_BONUS = 22;
@@ -35,20 +38,31 @@ const EGG_COST = 1;
 const EGG_SCORE_STEP = 80;
 const MAX_EGGS = 5;
 const MAX_WORKERS = 10;
-const MERGE_COOLDOWN_MS = 7000;
+const MERGE_COOLDOWN_MS = 4200;
+const SPLIT_COOLDOWN_MS = 2600;
 const MERGE_BONUS_FOOD = 8;
-const XP_PER_LEVEL = 140;
+const ACCOUNT_XP_PER_LEVEL = 140;
+const MATCH_XP_PER_LEVEL = 320;
 const MAX_LEVEL = 50;
 const HIVE_ATTACK_KNOCKBACK = 16;
 const HIVE_ATTACK_KNOCKBACK_LIMIT = 34;
 
 const WORKER_BASE_RADIUS = 8;
 const WORKER_MAX_RADIUS_BONUS = 14;
-const WORKER_BASE_SPEED = 182;
-const WORKER_MIN_SPEED = 102;
+const WORKER_BASE_SPEED = 214;
+const WORKER_MIN_SPEED = 104;
 const WORKER_AGGRO_RADIUS = 200;
 const WORKER_HARVEST_RADIUS = 190;
 const WORKER_HEALTH_REGEN = 3;
+const GROWTH_NODE_HEAL_FACTOR = 0.42;
+const WORKER_GROWTH_GAIN_MULTIPLIER = 1.16;
+const WORKER_SPLIT_MIN_FOOD = 14;
+const WORKER_SPLIT_FOOD_LOSS = 2;
+const WORKER_HATCH_SPAWN_DISTANCE = 84;
+const WORKER_HATCH_BOUNCE_SPEED = 148;
+const WORKER_SPLIT_BOUNCE_SPEED = 176;
+const WORKER_PICKOFF_SCORE_REWARD = 12;
+const COLONY_KILL_SCORE_REWARD = 58;
 
 const STARTER_SKINS = ["ember", "tide", "moss"];
 const LEVEL_SKIN_UNLOCKS = [
@@ -312,7 +326,9 @@ const MIME_TYPES = {
 
 const state = {
   players: new Map(),
+  spectators: new Map(),
   foods: [],
+  growthNodes: [],
   events: [],
   nextEventId: 1,
   round: {
@@ -413,18 +429,33 @@ function scoreFactor(score) {
 }
 
 function levelFromXp(xp) {
-  return clamp(Math.floor((xp || 0) / XP_PER_LEVEL) + 1, 1, MAX_LEVEL);
+  return clamp(Math.floor((xp || 0) / ACCOUNT_XP_PER_LEVEL) + 1, 1, MAX_LEVEL);
 }
 
 function xpFloorForLevel(level) {
-  return Math.max(0, (level - 1) * XP_PER_LEVEL);
+  return Math.max(0, (level - 1) * ACCOUNT_XP_PER_LEVEL);
 }
 
 function xpNeededForNextLevel(level) {
   if (level >= MAX_LEVEL) {
     return null;
   }
-  return level * XP_PER_LEVEL;
+  return level * ACCOUNT_XP_PER_LEVEL;
+}
+
+function matchLevelFromXp(xp) {
+  return clamp(Math.floor((xp || 0) / MATCH_XP_PER_LEVEL) + 1, 1, MAX_LEVEL);
+}
+
+function matchXpFloorForLevel(level) {
+  return Math.max(0, (level - 1) * MATCH_XP_PER_LEVEL);
+}
+
+function matchXpNeededForNextLevel(level) {
+  if (level >= MAX_LEVEL) {
+    return null;
+  }
+  return level * MATCH_XP_PER_LEVEL;
 }
 
 function cardRewardRarityForLevel(level) {
@@ -478,6 +509,23 @@ function createBuffState(cardIds) {
     }
   }
 
+  buffs.scoreGainBonusPct = Math.min(buffs.scoreGainBonusPct, 0.2);
+  buffs.playerHealthBonusPct = Math.min(buffs.playerHealthBonusPct, 0.35);
+  buffs.playerRegenBonusPct = Math.min(buffs.playerRegenBonusPct, 0.6);
+  buffs.playerSpeedBonusPct = Math.min(buffs.playerSpeedBonusPct, 0.12);
+  buffs.commandRangeBonusPct = Math.min(buffs.commandRangeBonusPct, 0.22);
+  buffs.eggStepReductionPct = Math.min(buffs.eggStepReductionPct, 0.22);
+  buffs.maxEggsBonus = Math.min(buffs.maxEggsBonus, 2);
+  buffs.maxWorkersBonus = Math.min(buffs.maxWorkersBonus, 2);
+  buffs.workerHealthBonusPct = Math.min(buffs.workerHealthBonusPct, 0.25);
+  buffs.workerDamageBonusPct = Math.min(buffs.workerDamageBonusPct, 0.25);
+  buffs.workerSpeedBonusPct = Math.min(buffs.workerSpeedBonusPct, 0.16);
+  buffs.workerReachBonusPct = Math.min(buffs.workerReachBonusPct, 0.14);
+  buffs.coreDamageBonusPct = Math.min(buffs.coreDamageBonusPct, 0.25);
+  buffs.raidSpeedBonusPct = Math.min(buffs.raidSpeedBonusPct, 0.16);
+  buffs.knockbackTakenReductionPct = Math.min(buffs.knockbackTakenReductionPct, 0.6);
+  buffs.newWorkerFoodBonus = Math.min(buffs.newWorkerFoodBonus, 16);
+
   return buffs;
 }
 
@@ -505,7 +553,8 @@ function workerRadiusForFood(food) {
 }
 
 function workerSpeed(worker, owner) {
-  const base = clamp(WORKER_BASE_SPEED - (worker.radius - WORKER_BASE_RADIUS) * 4.8, WORKER_MIN_SPEED, WORKER_BASE_SPEED);
+  const sizePenalty = Math.pow(Math.max(0, worker.radius - WORKER_BASE_RADIUS), 1.08) * 5.15;
+  const base = clamp(WORKER_BASE_SPEED - sizePenalty, WORKER_MIN_SPEED, WORKER_BASE_SPEED);
   const workerSpeedBonus = owner?.buffState?.workerSpeedBonusPct || 0;
   const raidSpeedBonus = worker.mode === "raid" ? owner?.buffState?.raidSpeedBonusPct || 0 : 0;
   return base * (1 + workerSpeedBonus + raidSpeedBonus);
@@ -559,6 +608,10 @@ function workerAggroRadiusForPlayer(player) {
   return WORKER_AGGRO_RADIUS + Math.max(0, player.commandRange - COMMAND_RANGE_BASE) * 0.12;
 }
 
+function workerGrowthNodeRequirement(node) {
+  return Math.max(15, node.requiredRadius * 0.5);
+}
+
 function spawnFood() {
   return {
     id: createId("food"),
@@ -569,12 +622,36 @@ function spawnFood() {
   };
 }
 
+function spawnGrowthNode() {
+  const coreRadius = randomBetween(11, 18);
+  const ringRadius = coreRadius + randomBetween(12, 22);
+  return {
+    id: createId("growth"),
+    x: randomBetween(ringRadius + 30, MAP_WIDTH - ringRadius - 30),
+    y: randomBetween(ringRadius + 30, MAP_HEIGHT - ringRadius - 30),
+    coreRadius,
+    ringRadius,
+    value: randomBetween(110, 180),
+    requiredRadius: randomBetween(35, 43)
+  };
+}
+
 function ensureFoodTarget() {
   if (state.round.status !== "running") {
     return;
   }
   while (state.foods.length < FOOD_TARGET) {
     state.foods.push(spawnFood());
+  }
+}
+
+function ensureGrowthNodeTarget() {
+  if (state.round.status !== "running") {
+    return;
+  }
+
+  while (state.growthNodes.length < GROWTH_NODE_TARGET) {
+    state.growthNodes.push(spawnGrowthNode());
   }
 }
 
@@ -619,38 +696,10 @@ function findAccountByUsername(username) {
   return accountStore.accounts.find((account) => account.username.toLowerCase() === lowered) || null;
 }
 
-function ensureAccountProgression(account) {
-  if (!Array.isArray(account.cardSelections)) {
-    account.cardSelections = [];
-  }
-
-  if (!Array.isArray(account.pendingCardChoices)) {
-    account.pendingCardChoices = [];
-  }
-
-  account.cardSelections = account.cardSelections
-    .filter((selection) => Number.isFinite(selection?.rewardLevel) && CARD_LIBRARY[selection.cardId])
-    .sort((left, right) => left.rewardLevel - right.rewardLevel);
-
-  account.pendingCardChoices = account.pendingCardChoices
-    .filter(
-      (choice) =>
-        Number.isFinite(choice?.rewardLevel) &&
-        Array.isArray(choice.options) &&
-        choice.options.every((cardId) => CARD_LIBRARY[cardId])
-    )
-    .map((choice) => ({
-      rewardLevel: choice.rewardLevel,
-      rarity: CARD_LIBRARY[choice.options[0]]?.rarity || cardRewardRarityForLevel(choice.rewardLevel),
-      options: choice.options.slice(0, 3)
-    }))
-    .sort((left, right) => left.rewardLevel - right.rewardLevel);
-}
-
-function buildCardChoice(account, rewardLevel) {
+function buildCardChoice(selectedCardIds, rewardLevel) {
   const rarity = cardRewardRarityForLevel(rewardLevel);
   const pool = CARD_IDS_BY_RARITY[rarity] || [];
-  const reserved = new Set(account.cardSelections.map((selection) => selection.cardId));
+  const reserved = new Set(selectedCardIds || []);
   const available = pool.filter((cardId) => !reserved.has(cardId));
   let options = sampleUnique(available, 3);
 
@@ -666,25 +715,7 @@ function buildCardChoice(account, rewardLevel) {
   };
 }
 
-function syncPendingCardRewards(account) {
-  ensureAccountProgression(account);
-  const level = levelFromXp(account.xp || 0);
-  const claimedLevels = new Set(account.cardSelections.map((selection) => selection.rewardLevel));
-  const pendingLevels = new Set(account.pendingCardChoices.map((choice) => choice.rewardLevel));
-
-  for (const rewardLevel of CARD_REWARD_LEVELS) {
-    if (rewardLevel > level || claimedLevels.has(rewardLevel) || pendingLevels.has(rewardLevel)) {
-      continue;
-    }
-
-    account.pendingCardChoices.push(buildCardChoice(account, rewardLevel));
-  }
-
-  account.pendingCardChoices.sort((left, right) => left.rewardLevel - right.rewardLevel);
-}
-
 function applyLevelUnlocks(account) {
-  ensureAccountProgression(account);
   const owned = new Set(Array.isArray(account.ownedSkins) ? account.ownedSkins : []);
 
   for (const skinId of STARTER_SKINS) {
@@ -700,7 +731,6 @@ function applyLevelUnlocks(account) {
 
   account.level = level;
   account.ownedSkins = Array.from(owned);
-  syncPendingCardRewards(account);
 
   if (!account.selectedSkin || !account.ownedSkins.includes(account.selectedSkin)) {
     account.selectedSkin = STARTER_SKINS[0];
@@ -711,27 +741,6 @@ function summarizeAccount(account) {
   applyLevelUnlocks(account);
   const level = account.level;
   const nextLevelXp = xpNeededForNextLevel(level);
-  const activeCards = account.cardSelections
-    .map((selection) => {
-      const card = summarizeCard(selection.cardId);
-      return card
-        ? {
-            ...card,
-            rewardLevel: selection.rewardLevel
-          }
-        : null;
-    })
-    .filter(Boolean);
-  const pendingCardChoices = account.pendingCardChoices
-    .map((choice) => ({
-      rewardLevel: choice.rewardLevel,
-      rarity: choice.rarity,
-      options: choice.options.map(summarizeCard).filter(Boolean)
-    }))
-    .filter((choice) => choice.options.length === 3);
-  const nextCardRewardLevel = CARD_REWARD_LEVELS.find(
-    (rewardLevel) => rewardLevel > level && !account.cardSelections.some((selection) => selection.rewardLevel === rewardLevel)
-  );
   return {
     mode: "account",
     username: account.username,
@@ -744,9 +753,9 @@ function summarizeAccount(account) {
     ownedSkins: account.ownedSkins,
     totalMatches: account.totalMatches || 0,
     totalKills: account.totalKills || 0,
-    activeCards,
-    pendingCardChoices,
-    nextCardRewardLevel: nextCardRewardLevel || null,
+    activeCards: [],
+    pendingCardChoices: [],
+    nextCardRewardLevel: null,
     temporary: false
   };
 }
@@ -759,7 +768,7 @@ function summarizeGuestSession(session) {
     level: 1,
     xp: 0,
     xpIntoLevel: 0,
-    xpForNextLevel: XP_PER_LEVEL,
+    xpForNextLevel: ACCOUNT_XP_PER_LEVEL,
     selectedSkin: session.selectedSkin,
     ownedSkins: STARTER_SKINS,
     totalMatches: 0,
@@ -792,6 +801,59 @@ function createGuestSession(guestName, selectedSkin) {
     createdAt: Date.now()
   });
   return token;
+}
+
+function createSpectatorSession(session) {
+  const spectator = {
+    id: createId("spectator"),
+    sessionToken: session.token,
+    socket: null,
+    createdAt: Date.now()
+  };
+  state.spectators.set(spectator.id, spectator);
+  return spectator;
+}
+
+function summarizePlayerPendingChoices(player) {
+  return (player.pendingCardChoices || [])
+    .map((choice) => ({
+      rewardLevel: choice.rewardLevel,
+      rarity: choice.rarity,
+      options: choice.options.map(summarizeCard).filter(Boolean)
+    }))
+    .filter((choice) => choice.options.length === 3);
+}
+
+function nextPlayerCardRewardLevel(player) {
+  return CARD_REWARD_LEVELS.find((rewardLevel) => rewardLevel > player.matchLevel && !player.claimedCardRewardLevels.includes(rewardLevel)) || null;
+}
+
+function syncPendingCardRewardsForPlayer(player) {
+  const claimedLevels = new Set(player.claimedCardRewardLevels || []);
+  const pendingLevels = new Set((player.pendingCardChoices || []).map((choice) => choice.rewardLevel));
+
+  for (const rewardLevel of CARD_REWARD_LEVELS) {
+    if (rewardLevel > player.matchLevel || claimedLevels.has(rewardLevel) || pendingLevels.has(rewardLevel)) {
+      continue;
+    }
+
+    player.pendingCardChoices.push(buildCardChoice(player.activeCardIds, rewardLevel));
+  }
+
+  player.pendingCardChoices.sort((left, right) => left.rewardLevel - right.rewardLevel);
+}
+
+function grantMatchXp(player, amount) {
+  if (amount <= 0) {
+    return;
+  }
+
+  player.matchXp += amount;
+  const nextLevel = matchLevelFromXp(player.matchXp);
+  if (nextLevel > player.matchLevel) {
+    player.matchLevel = nextLevel;
+    syncPendingCardRewardsForPlayer(player);
+  }
 }
 
 function getSessionByToken(token) {
@@ -871,9 +933,11 @@ function refreshPlayerDerivedStats(player) {
 
 function resetArenaState() {
   state.foods = [];
+  state.growthNodes = [];
   state.events = [];
   state.nextEventId = 1;
   ensureFoodTarget();
+  ensureGrowthNodeTarget();
 }
 
 function startNextRound() {
@@ -922,30 +986,66 @@ function getSkinPrimaryColor(skinId) {
   return SKIN_LIBRARY[skinId]?.primary || SKIN_LIBRARY.ember.primary;
 }
 
-function createWorker(owner) {
-  const angle = Math.random() * Math.PI * 2;
+function applyWorkerBounce(worker, angle, speed) {
+  const finalSpeed = Math.max(0, speed || 0);
+  worker.bounceX = Math.cos(angle) * finalSpeed;
+  worker.bounceY = Math.sin(angle) * finalSpeed;
+}
+
+function createWorker(owner, options = {}) {
+  const angle = Number.isFinite(options.angle) ? options.angle : Math.random() * Math.PI * 2;
+  const spawnDistance = Math.max(0, options.spawnDistance ?? WORKER_HATCH_SPAWN_DISTANCE);
   const starterFood = owner?.buffState?.newWorkerFoodBonus || 0;
   const worker = {
     id: createId("worker"),
-    x: owner.x + Math.cos(angle) * 60,
-    y: owner.y + Math.sin(angle) * 60,
+    x: owner.x + Math.cos(angle) * spawnDistance,
+    y: owner.y + Math.sin(angle) * spawnDistance,
     food: starterFood,
     radius: WORKER_BASE_RADIUS,
     health: 20,
     healthMax: 20,
-    mode: "harvest"
+    mode: "harvest",
+    bounceX: 0,
+    bounceY: 0
   };
   refreshWorkerDerivedStats(worker, owner);
   worker.health = worker.healthMax;
+  if ((options.bounceSpeed || 0) > 0) {
+    applyWorkerBounce(worker, angle, options.bounceSpeed);
+  }
   return worker;
 }
 
+function randomSpawnPoint(radius) {
+  let bestPoint = null;
+  let bestDistance = -1;
+  const padding = Math.max(140, radius + 40);
+
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const point = {
+      x: randomBetween(padding, MAP_WIDTH - padding),
+      y: randomBetween(padding, MAP_HEIGHT - padding)
+    };
+
+    let nearestDistance = Infinity;
+    for (const player of state.players.values()) {
+      if (!player.alive) {
+        continue;
+      }
+      nearestDistance = Math.min(nearestDistance, Math.hypot(point.x - player.x, point.y - player.y));
+    }
+
+    if (nearestDistance > bestDistance) {
+      bestDistance = nearestDistance;
+      bestPoint = point;
+    }
+  }
+
+  return bestPoint || { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 };
+}
+
 function createPlayer(identity) {
-  const playerCount = state.players.size;
-  const spawnAngle = (Math.PI * 2 * playerCount) / Math.max(MAX_PLAYERS, 1);
-  const spawnRadius = 430;
-  const centerX = MAP_WIDTH / 2;
-  const centerY = MAP_HEIGHT / 2;
+  const spawnPoint = randomSpawnPoint(PLAYER_BASE_RADIUS);
   const name = identity.displayName.slice(0, 16);
   const skinId = SKIN_LIBRARY[identity.selectedSkin] ? identity.selectedSkin : STARTER_SKINS[0];
   const player = {
@@ -956,8 +1056,8 @@ function createPlayer(identity) {
     profileMode: identity.mode,
     sessionToken: identity.sessionToken,
     accountId: identity.accountId || null,
-    x: centerX + Math.cos(spawnAngle) * spawnRadius,
-    y: centerY + Math.sin(spawnAngle) * spawnRadius,
+    x: spawnPoint.x,
+    y: spawnPoint.y,
     radius: PLAYER_BASE_RADIUS,
     health: PLAYER_BASE_HEALTH,
     healthMax: PLAYER_BASE_HEALTH,
@@ -968,6 +1068,11 @@ function createPlayer(identity) {
     maxEggs: MAX_EGGS,
     maxWorkers: MAX_WORKERS,
     eggScoreStep: EGG_SCORE_STEP,
+    matchXp: 0,
+    matchLevel: 1,
+    activeCardIds: identity.activeCardIds || [],
+    claimedCardRewardLevels: [],
+    pendingCardChoices: [],
     workers: [],
     input: {
       x: 0,
@@ -975,18 +1080,21 @@ function createPlayer(identity) {
       boost: false,
       hatch: false,
       merge: false,
+      split: false,
       attack: false,
-      pointerX: centerX,
-      pointerY: centerY
+      pointerX: spawnPoint.x,
+      pointerY: spawnPoint.y
     },
     isAttacking: false,
     mergeCooldownUntil: 0,
-    commandPoint: { x: centerX, y: centerY },
+    splitCooldownUntil: 0,
+    commandPoint: { x: spawnPoint.x, y: spawnPoint.y },
     lastInputAt: Date.now(),
     socket: null,
-    buffState: createBuffState(identity.activeCardIds),
+    buffState: createBuffState(identity.activeCardIds || []),
     knockbackX: 0,
     knockbackY: 0,
+    spawnGraceUntil: Date.now() + SPAWN_GRACE_MS,
     respawnTimer: 0,
     alive: true
   };
@@ -1002,16 +1110,11 @@ function createPlayer(identity) {
 }
 
 function playerHiveLevel(player) {
-  if (!player.accountId) {
-    return 1;
-  }
-
-  const account = getAccountById(player.accountId);
-  return account?.level || levelFromXp(account?.xp || 0) || 1;
+  return player.matchLevel || 1;
 }
 
 function playerActiveCards(player) {
-  return (player?.buffState?.activeCardIds || []).map(summarizeCard).filter(Boolean);
+  return (player?.activeCardIds || []).map(summarizeCard).filter(Boolean);
 }
 
 function serializePlayer(player) {
@@ -1028,12 +1131,22 @@ function serializePlayer(player) {
     health: Math.round(player.health),
     healthMax: Math.round(player.healthMax),
     score: Math.round(player.score),
+    matchXp: Math.round(player.matchXp),
+    matchXpIntoLevel: Math.round(player.matchXp - matchXpFloorForLevel(player.matchLevel)),
+    matchXpForNextLevel:
+      matchXpNeededForNextLevel(player.matchLevel) === null
+        ? null
+        : matchXpNeededForNextLevel(player.matchLevel) - matchXpFloorForLevel(player.matchLevel),
     eggs: player.eggs,
     maxEggs: player.maxEggs,
     alive: player.alive,
     mergeCooldownMs: Math.max(0, player.mergeCooldownUntil - Date.now()),
+    splitCooldownMs: Math.max(0, player.splitCooldownUntil - Date.now()),
     commandRange: Math.round(player.commandRange),
     maxWorkers: player.maxWorkers,
+    spawnProtectedMs: Math.max(0, (player.spawnGraceUntil || 0) - Date.now()),
+    pendingCardChoices: summarizePlayerPendingChoices(player),
+    nextCardRewardLevel: nextPlayerCardRewardLevel(player),
     commandX: Math.round(player.commandPoint.x),
     commandY: Math.round(player.commandPoint.y),
     workers: player.workers.map((worker) => ({
@@ -1084,6 +1197,13 @@ function removeFood(foodId) {
   }
 }
 
+function removeGrowthNode(nodeId) {
+  const index = state.growthNodes.findIndex((node) => node.id === nodeId);
+  if (index >= 0) {
+    state.growthNodes.splice(index, 1);
+  }
+}
+
 function awardAccountXp(player, amount) {
   if (!player.accountId || amount <= 0) {
     return;
@@ -1100,9 +1220,7 @@ function awardAccountXp(player, amount) {
 }
 
 function syncPlayerBuffsFromAccount(player) {
-  const activeCardIds = player.accountId
-    ? (getAccountById(player.accountId)?.cardSelections || []).map((selection) => selection.cardId)
-    : player.buffState?.activeCardIds || [];
+  const activeCardIds = player.activeCardIds || [];
   const previousHealthRatio = player.healthMax > 0 ? player.health / player.healthMax : 1;
   player.buffState = createBuffState(activeCardIds);
   refreshPlayerDerivedStats(player);
@@ -1175,6 +1293,7 @@ function grantScore(player, amount) {
   const bonusHealth = finalAmount * 0.18;
   player.health = clamp(previousHealth + healthCapGain + bonusHealth, 0, player.healthMax);
   awardAccountXp(player, finalAmount);
+  grantMatchXp(player, finalAmount);
 }
 
 function spendScore(player, amount) {
@@ -1188,8 +1307,7 @@ function resetPlayer(player) {
     selectedSkin: player.skinId,
     mode: player.profileMode,
     sessionToken: player.sessionToken,
-    accountId: player.accountId,
-    activeCardIds: player.buffState?.activeCardIds || []
+    accountId: player.accountId
   });
 
   player.x = replacement.x;
@@ -1207,7 +1325,10 @@ function resetPlayer(player) {
   player.commandPoint = { x: player.x, y: player.y };
   player.knockbackX = 0;
   player.knockbackY = 0;
+  player.spawnGraceUntil = Date.now() + SPAWN_GRACE_MS;
   player.respawnTimer = 0;
+  player.mergeCooldownUntil = 0;
+  player.splitCooldownUntil = 0;
   player.alive = true;
   pushEvent("respawn", { playerId: player.id, name: player.name });
 }
@@ -1218,9 +1339,13 @@ function collapsePlayer(attacker, victim) {
   victim.workers = [];
   victim.health = 0;
   attacker.health = clamp(attacker.health + 20, 0, attacker.healthMax);
-  grantScore(attacker, 90);
+  grantScore(attacker, COLONY_KILL_SCORE_REWARD);
   incrementAccountStat(attacker, "totalKills");
   pushEvent("colony_down", { attacker: attacker.name, victim: victim.name });
+}
+
+function isSpawnProtected(player) {
+  return Date.now() < (player.spawnGraceUntil || 0);
 }
 
 function findClosestFoodAround(origin, radius) {
@@ -1245,6 +1370,39 @@ function formationPoint(player, index, total) {
     x: player.commandPoint.x + Math.cos(angle) * spread,
     y: player.commandPoint.y + Math.sin(angle) * spread
   };
+}
+
+function clampWorkerToCommandRange(player, worker) {
+  const offsetX = worker.x - player.commandPoint.x;
+  const offsetY = worker.y - player.commandPoint.y;
+  const distanceFromCommand = Math.hypot(offsetX, offsetY);
+  const maxDistance = Math.max(24, player.commandRange);
+
+  if (distanceFromCommand <= maxDistance) {
+    return;
+  }
+
+  const direction = normalize(offsetX, offsetY);
+  worker.x = player.commandPoint.x + direction.x * maxDistance;
+  worker.y = player.commandPoint.y + direction.y * maxDistance;
+  worker.x = clamp(worker.x, worker.radius + 2, MAP_WIDTH - worker.radius - 2);
+  worker.y = clamp(worker.y, worker.radius + 2, MAP_HEIGHT - worker.radius - 2);
+}
+
+function findClosestCommandScopedFood(player, origin, radius) {
+  let bestFood = null;
+  let bestDistance = Infinity;
+
+  for (const food of state.foods) {
+    const distanceToOrigin = Math.hypot(food.x - origin.x, food.y - origin.y);
+    const distanceToCommand = Math.hypot(food.x - player.commandPoint.x, food.y - player.commandPoint.y);
+    if (distanceToOrigin <= radius && distanceToCommand <= player.commandRange && distanceToOrigin < bestDistance) {
+      bestDistance = distanceToOrigin;
+      bestFood = food;
+    }
+  }
+
+  return bestFood;
 }
 
 function mergeWorkers(player) {
@@ -1292,6 +1450,61 @@ function mergeWorkers(player) {
   return true;
 }
 
+function splitWorker(player) {
+  if (player.workers.length >= player.maxWorkers) {
+    return false;
+  }
+
+  let bestWorker = null;
+  let bestScore = -1;
+  for (const worker of player.workers) {
+    if (worker.food < WORKER_SPLIT_MIN_FOOD) {
+      continue;
+    }
+
+    const score = worker.food + worker.radius * 2;
+    if (score > bestScore) {
+      bestScore = score;
+      bestWorker = worker;
+    }
+  }
+
+  if (!bestWorker) {
+    return false;
+  }
+
+  const totalFood = Math.max(0, bestWorker.food - WORKER_SPLIT_FOOD_LOSS);
+  const firstFood = Math.floor(totalFood / 2);
+  const secondFood = Math.ceil(totalFood / 2);
+  const baseAngle = Math.atan2(bestWorker.y - player.y, bestWorker.x - player.x) || Math.random() * Math.PI * 2;
+  const splitDistance = clamp(31 - (bestWorker.radius - WORKER_BASE_RADIUS) * 0.92, 13, 28);
+  const leftAngle = baseAngle + Math.PI / 2;
+  const rightAngle = baseAngle - Math.PI / 2;
+
+  const leftWorker = createWorker(player, { spawnDistance: 0, angle: leftAngle, bounceSpeed: WORKER_SPLIT_BOUNCE_SPEED });
+  const rightWorker = createWorker(player, { spawnDistance: 0, angle: rightAngle, bounceSpeed: WORKER_SPLIT_BOUNCE_SPEED });
+  leftWorker.mode = player.isAttacking ? "raid" : "harvest";
+  rightWorker.mode = leftWorker.mode;
+  leftWorker.food = firstFood;
+  rightWorker.food = secondFood;
+  leftWorker.x = bestWorker.x + Math.cos(leftAngle) * splitDistance;
+  leftWorker.y = bestWorker.y + Math.sin(leftAngle) * splitDistance;
+  rightWorker.x = bestWorker.x + Math.cos(rightAngle) * splitDistance;
+  rightWorker.y = bestWorker.y + Math.sin(rightAngle) * splitDistance;
+  refreshWorkerDerivedStats(leftWorker, player);
+  refreshWorkerDerivedStats(rightWorker, player);
+  leftWorker.health = Math.min(leftWorker.healthMax, Math.max(10, bestWorker.health * (firstFood / Math.max(1, totalFood))));
+  rightWorker.health = Math.min(rightWorker.healthMax, Math.max(10, bestWorker.health * (secondFood / Math.max(1, totalFood))));
+  clampWorkerToCommandRange(player, leftWorker);
+  clampWorkerToCommandRange(player, rightWorker);
+
+  player.workers = player.workers.filter((worker) => worker.id !== bestWorker.id);
+  player.workers.push(leftWorker, rightWorker);
+  player.splitCooldownUntil = Date.now() + SPLIT_COOLDOWN_MS;
+  pushEvent("worker_split", { playerId: player.id, name: player.name, workers: player.workers.length });
+  return true;
+}
+
 function findWorkerTarget(attacker, worker) {
   let bestTarget = null;
   let bestDistance = Infinity;
@@ -1299,6 +1512,10 @@ function findWorkerTarget(attacker, worker) {
 
   for (const player of state.players.values()) {
     if (player.id === attacker.id || !player.alive) {
+      continue;
+    }
+
+    if (isSpawnProtected(player)) {
       continue;
     }
 
@@ -1326,20 +1543,79 @@ function findWorkerTarget(attacker, worker) {
 
 function moveEntity(entity, targetX, targetY, speed, deltaSeconds, padding) {
   const vector = normalize(targetX - entity.x, targetY - entity.y);
-  entity.x += vector.x * speed * deltaSeconds;
-  entity.y += vector.y * speed * deltaSeconds;
+  entity.x += vector.x * speed * deltaSeconds + (entity.bounceX || 0) * deltaSeconds;
+  entity.y += vector.y * speed * deltaSeconds + (entity.bounceY || 0) * deltaSeconds;
+  entity.bounceX = (entity.bounceX || 0) * 0.72;
+  entity.bounceY = (entity.bounceY || 0) * 0.72;
   entity.x = clamp(entity.x, padding, MAP_WIDTH - padding);
   entity.y = clamp(entity.y, padding, MAP_HEIGHT - padding);
 }
 
+function findClosestGrowthNodeAround(origin, radius) {
+  let bestNode = null;
+  let bestDistance = Infinity;
+
+  for (const node of state.growthNodes) {
+    const nextDistance = Math.hypot(node.x - origin.x, node.y - origin.y);
+    if (nextDistance <= radius && nextDistance < bestDistance) {
+      bestDistance = nextDistance;
+      bestNode = node;
+    }
+  }
+
+  return bestNode;
+}
+
+function findClosestCommandScopedGrowthNode(player, origin, radius) {
+  let bestNode = null;
+  let bestDistance = Infinity;
+
+  for (const node of state.growthNodes) {
+    const distanceToOrigin = Math.hypot(node.x - origin.x, node.y - origin.y);
+    const distanceToCommand = Math.hypot(node.x - player.commandPoint.x, node.y - player.commandPoint.y);
+    if (distanceToOrigin <= radius && distanceToCommand <= player.commandRange && distanceToOrigin < bestDistance) {
+      bestDistance = distanceToOrigin;
+      bestNode = node;
+    }
+  }
+
+  return bestNode;
+}
+
+function canWorkerConsumeGrowthNode(worker, node) {
+  return worker.radius >= workerGrowthNodeRequirement(node);
+}
+
+function feedWorkerFromGrowthNode(player, worker, node) {
+  worker.food += node.value * WORKER_GROWTH_GAIN_MULTIPLIER;
+  refreshWorkerDerivedStats(worker, player);
+  worker.health = worker.healthMax;
+  player.health = clamp(player.health + node.value * GROWTH_NODE_HEAL_FACTOR, 0, player.healthMax);
+  grantScore(player, node.value);
+  removeGrowthNode(node.id);
+  pushEvent("growth_node", { playerId: player.id, name: player.name, score: Math.round(node.value) });
+}
+
 function handleWorkerHarvest(player, worker, index, deltaSeconds) {
   const fallback = formationPoint(player, index, player.workers.length);
-  const food = findClosestFoodAround(worker, WORKER_HARVEST_RADIUS) || findClosestFoodAround(fallback, WORKER_HARVEST_RADIUS);
-  const target = food || fallback;
+  const nodeCandidate =
+    findClosestCommandScopedGrowthNode(player, worker, WORKER_HARVEST_RADIUS) ||
+    findClosestCommandScopedGrowthNode(player, fallback, WORKER_HARVEST_RADIUS);
+  const node = nodeCandidate && canWorkerConsumeGrowthNode(worker, nodeCandidate) ? nodeCandidate : null;
+  const food =
+    findClosestCommandScopedFood(player, worker, WORKER_HARVEST_RADIUS) ||
+    findClosestCommandScopedFood(player, fallback, WORKER_HARVEST_RADIUS);
+  const target = node || food || fallback;
   moveEntity(worker, target.x, target.y, workerSpeed(worker, player), deltaSeconds, worker.radius + 2);
+  clampWorkerToCommandRange(player, worker);
+
+  if (node && canWorkerConsumeGrowthNode(worker, node) && Math.hypot(node.x - worker.x, node.y - worker.y) <= node.coreRadius + worker.radius + 2) {
+    feedWorkerFromGrowthNode(player, worker, node);
+    return;
+  }
 
   if (food && Math.hypot(food.x - worker.x, food.y - worker.y) <= food.size + worker.radius + 2) {
-    worker.food += food.value;
+    worker.food += food.value * WORKER_GROWTH_GAIN_MULTIPLIER;
     refreshWorkerDerivedStats(worker, player);
     worker.health = worker.healthMax;
     player.health = clamp(player.health + food.value * 0.32, 0, player.healthMax);
@@ -1349,7 +1625,7 @@ function handleWorkerHarvest(player, worker, index, deltaSeconds) {
 }
 
 function tryConsumeNearbyFood(player, worker) {
-  const food = findClosestFoodAround(worker, worker.radius + 18);
+  const food = findClosestCommandScopedFood(player, worker, worker.radius + 18);
   if (!food) {
     return false;
   }
@@ -1358,7 +1634,7 @@ function tryConsumeNearbyFood(player, worker) {
     return false;
   }
 
-  worker.food += food.value;
+  worker.food += food.value * WORKER_GROWTH_GAIN_MULTIPLIER;
   refreshWorkerDerivedStats(worker, player);
   worker.health = worker.healthMax;
   player.health = clamp(player.health + food.value * 0.32, 0, player.healthMax);
@@ -1367,21 +1643,46 @@ function tryConsumeNearbyFood(player, worker) {
   return true;
 }
 
+function tryConsumeNearbyGrowthNode(player, worker) {
+  const node = findClosestCommandScopedGrowthNode(player, worker, worker.radius + 20);
+  if (!node || !canWorkerConsumeGrowthNode(worker, node)) {
+    return false;
+  }
+
+  if (Math.hypot(node.x - worker.x, node.y - worker.y) > node.coreRadius + worker.radius + 2) {
+    return false;
+  }
+
+  feedWorkerFromGrowthNode(player, worker, node);
+  return true;
+}
+
 function handleWorkerCombat(player, worker, deltaSeconds) {
   const target = findWorkerTarget(player, worker);
-  const fallbackFood =
-    findClosestFoodAround(worker, WORKER_HARVEST_RADIUS) || findClosestFoodAround(player.commandPoint, player.commandRange);
-  const fallback = fallbackFood || player.commandPoint;
+  const commandedNodeCandidate = findClosestCommandScopedGrowthNode(
+    player,
+    player.commandPoint,
+    Math.max(34, player.radius + 20)
+  );
+  const commandedNode =
+    commandedNodeCandidate && canWorkerConsumeGrowthNode(worker, commandedNodeCandidate) ? commandedNodeCandidate : null;
+  const commandedFood = findClosestCommandScopedFood(player, player.commandPoint, Math.max(28, player.radius + 12));
+  const fallback = commandedNode || commandedFood || player.commandPoint;
 
   if (!target) {
     moveEntity(worker, fallback.x, fallback.y, workerSpeed(worker, player), deltaSeconds, worker.radius + 2);
-    tryConsumeNearbyFood(player, worker);
+    clampWorkerToCommandRange(player, worker);
+    if (commandedNode) {
+      tryConsumeNearbyGrowthNode(player, worker);
+    } else if (commandedFood) {
+      tryConsumeNearbyFood(player, worker);
+    }
     return;
   }
 
   const targetPosition = target.kind === "worker" ? target.worker : target.player;
   moveEntity(worker, targetPosition.x, targetPosition.y, workerSpeed(worker, player), deltaSeconds, worker.radius + 2);
-  tryConsumeNearbyFood(player, worker);
+  clampWorkerToCommandRange(player, worker);
 
   if (target.kind === "worker") {
     const reach = workerReach(worker, player) + target.worker.radius;
@@ -1389,8 +1690,8 @@ function handleWorkerCombat(player, worker, deltaSeconds) {
       target.worker.health -= workerDamage(worker, player) * deltaSeconds;
       if (target.worker.health <= 0) {
         target.player.workers = target.player.workers.filter((entry) => entry.id !== target.worker.id);
-        grantScore(player, 18);
-        player.health = clamp(player.health + 8, 0, player.healthMax);
+        grantScore(player, WORKER_PICKOFF_SCORE_REWARD);
+        player.health = clamp(player.health + 6, 0, player.healthMax);
         pushEvent("worker_pickoff", { attacker: player.name, victim: target.player.name });
       }
     }
@@ -1424,7 +1725,7 @@ function updatePlayer(player, deltaSeconds) {
   const recentInput = Date.now() - player.lastInputAt < INPUT_TIMEOUT_MS;
   const input = recentInput
     ? player.input
-    : { x: 0, y: 0, boost: false, hatch: false, merge: false, attack: false, pointerX: player.x, pointerY: player.y };
+    : { x: 0, y: 0, boost: false, hatch: false, merge: false, split: false, attack: false, pointerX: player.x, pointerY: player.y };
 
   player.isAttacking = Boolean(input.attack);
   player.commandPoint = clampedCommandPoint(player, input.pointerX, input.pointerY);
@@ -1455,9 +1756,30 @@ function updatePlayer(player, deltaSeconds) {
     }
   }
 
+  for (const node of state.growthNodes) {
+    if (player.radius < node.requiredRadius) {
+      continue;
+    }
+
+    if (distance(player, node) <= player.radius + node.coreRadius) {
+      player.health = clamp(player.health + node.value * GROWTH_NODE_HEAL_FACTOR, 0, player.healthMax);
+      grantScore(player, node.value);
+      removeGrowthNode(node.id);
+      pushEvent("growth_node", { playerId: player.id, name: player.name, score: Math.round(node.value) });
+      break;
+    }
+  }
+
   if (input.hatch && player.eggs >= EGG_COST && player.workers.length < player.maxWorkers) {
     player.eggs -= EGG_COST;
-    player.workers.push(createWorker(player));
+    const hatchAngle = Math.atan2(player.commandPoint.y - player.y, player.commandPoint.x - player.x) || Math.random() * Math.PI * 2;
+    player.workers.push(
+      createWorker(player, {
+        angle: hatchAngle,
+        spawnDistance: WORKER_HATCH_SPAWN_DISTANCE,
+        bounceSpeed: WORKER_HATCH_BOUNCE_SPEED
+      })
+    );
     pushEvent("hatch", { playerId: player.id, name: player.name, workers: player.workers.length });
     player.input.hatch = false;
   }
@@ -1465,6 +1787,12 @@ function updatePlayer(player, deltaSeconds) {
   if (input.merge && Date.now() >= player.mergeCooldownUntil) {
     if (mergeWorkers(player)) {
       player.input.merge = false;
+    }
+  }
+
+  if (input.split && Date.now() >= player.splitCooldownUntil) {
+    if (splitWorker(player)) {
+      player.input.split = false;
     }
   }
 }
@@ -1502,6 +1830,7 @@ function updateGame() {
   }
 
   ensureFoodTarget();
+  ensureGrowthNodeTarget();
 
   for (const player of state.players.values()) {
     updatePlayer(player, deltaSeconds);
@@ -1517,9 +1846,8 @@ function updateGame() {
   }
 }
 
-function snapshotFor(playerId) {
-  const players = Array.from(state.players.values()).map(serializePlayer);
-  const leaderboard = players
+function buildLeaderboard(players) {
+  return players
     .map((player) => ({
       id: player.id,
       name: player.name,
@@ -1527,14 +1855,34 @@ function snapshotFor(playerId) {
       workers: player.workers.length
     }))
     .sort((left, right) => right.score - left.score)
-    .slice(0, 4);
+    .slice(0, LEADERBOARD_SIZE);
+}
 
-  const selfPlayer = state.players.get(playerId);
-  const selfSession = selfPlayer ? getSessionByToken(selfPlayer.sessionToken) : null;
+function resolveSpectatorFocusId(players, requestedPlayerId) {
+  if (requestedPlayerId && players.some((player) => player.id === requestedPlayerId && player.alive)) {
+    return requestedPlayerId;
+  }
+
+  const alivePlayers = players
+    .filter((player) => player.alive)
+    .sort((left, right) => right.score - left.score);
+
+  return alivePlayers[0]?.id || players[0]?.id || null;
+}
+
+function snapshotForViewer({ playerId = null, sessionToken = "", spectatorMode = false, spectatorFocusId = null } = {}) {
+  const players = Array.from(state.players.values()).map(serializePlayer);
+  const leaderboard = buildLeaderboard(players);
+  const profileSession = sessionToken ? getSessionByToken(sessionToken) : state.players.get(playerId) ? getSessionByToken(state.players.get(playerId).sessionToken) : null;
+  const resolvedFocusId = spectatorMode ? resolveSpectatorFocusId(players, spectatorFocusId) : null;
 
   return {
     type: "state",
     you: playerId,
+    spectator: {
+      active: spectatorMode,
+      focusPlayerId: resolvedFocusId
+    },
     serverTime: Date.now(),
     config: {
       mapWidth: MAP_WIDTH,
@@ -1545,9 +1893,10 @@ function snapshotFor(playerId) {
     },
     players,
     foods: state.foods,
+    growthNodes: state.growthNodes,
     leaderboard,
     recentEvents: state.events.slice(-8),
-    profile: buildProfileForSession(selfSession),
+    profile: buildProfileForSession(profileSession),
     round: {
       number: state.round.number,
       status: state.round.status,
@@ -1562,7 +1911,15 @@ function snapshotFor(playerId) {
 function broadcastGameState() {
   for (const player of state.players.values()) {
     if (player.socket?.readyState === 1) {
-      player.socket.send(JSON.stringify(snapshotFor(player.id)));
+      player.socket.send(JSON.stringify(snapshotForViewer({ playerId: player.id })));
+    }
+  }
+
+  for (const spectator of state.spectators.values()) {
+    if (spectator.socket?.readyState === 1) {
+      spectator.socket.send(
+        JSON.stringify(snapshotForViewer({ sessionToken: spectator.sessionToken, spectatorMode: true }))
+      );
     }
   }
 }
@@ -1602,8 +1959,6 @@ function handleRegister(request, response, payload) {
     level: 1,
     ownedSkins: [...STARTER_SKINS],
     selectedSkin: starterSkin,
-    cardSelections: [],
-    pendingCardChoices: [],
     totalMatches: 0,
     totalKills: 0,
     createdAt: Date.now(),
@@ -1706,13 +2061,6 @@ function handleSelectSkin(request, response, payload) {
     scheduleAccountSave();
   }
 
-  for (const player of state.players.values()) {
-    if (player.sessionToken === session.token) {
-      player.skinId = skinId;
-      player.color = getSkinPrimaryColor(skinId);
-    }
-  }
-
   sendJson(response, 200, {
     profile: buildProfileForSession(session)
   });
@@ -1720,51 +2068,43 @@ function handleSelectSkin(request, response, payload) {
 
 function handleSelectCard(request, response, payload) {
   const session = resolveSession(request, payload);
-  if (!session || session.mode !== "account") {
-    sendJson(response, 401, { error: "Sign in with an account to claim hive cards." });
+  if (!session) {
+    sendJson(response, 401, { error: "Sign in first." });
     return;
   }
 
   const rewardLevel = Number(payload.rewardLevel);
   const cardId = String(payload.cardId || "");
-  const account = getAccountById(session.accountId);
-  if (!account) {
-    sendJson(response, 401, { error: "Session is no longer valid." });
+  const player = Array.from(state.players.values()).find((entry) => entry.sessionToken === session.token);
+  if (!player) {
+    sendJson(response, 409, { error: "Join the arena first to choose a hive card." });
     return;
   }
 
-  applyLevelUnlocks(account);
-  const choiceIndex = account.pendingCardChoices.findIndex((choice) => choice.rewardLevel === rewardLevel);
+  const choiceIndex = player.pendingCardChoices.findIndex((choice) => choice.rewardLevel === rewardLevel);
   if (choiceIndex < 0) {
     sendJson(response, 404, { error: "That hive card choice is no longer available." });
     return;
   }
 
-  const choice = account.pendingCardChoices[choiceIndex];
+  const choice = player.pendingCardChoices[choiceIndex];
   if (!choice.options.includes(cardId)) {
     sendJson(response, 400, { error: "Choose 1 of the 3 offered cards." });
     return;
   }
 
-  account.pendingCardChoices.splice(choiceIndex, 1);
-  account.cardSelections.push({
-    rewardLevel,
-    cardId,
-    claimedAt: Date.now()
-  });
-  account.cardSelections.sort((left, right) => left.rewardLevel - right.rewardLevel);
-  account.lastSeenAt = Date.now();
-  applyLevelUnlocks(account);
-  scheduleAccountSave();
-  syncAllPlayersForAccount(account.id);
+  player.pendingCardChoices.splice(choiceIndex, 1);
+  player.claimedCardRewardLevels.push(rewardLevel);
+  player.activeCardIds.push(cardId);
+  syncPlayerBuffsFromAccount(player);
   pushEvent("card_claimed", {
-    player: account.username,
+    player: player.name,
     card: CARD_LIBRARY[cardId]?.title || cardId,
     rewardLevel
   });
 
   sendJson(response, 200, {
-    profile: summarizeAccount(account)
+    ok: true
   });
 }
 
@@ -1789,6 +2129,12 @@ function handleJoin(request, response, payload) {
     return;
   }
 
+  const existingPlayer = Array.from(state.players.values()).find((player) => player.sessionToken === session.token);
+  if (existingPlayer) {
+    sendJson(response, 409, { error: "This profile is already in the arena. Return to that session or leave it first." });
+    return;
+  }
+
   const profile = buildProfileForSession(session);
   if (!profile) {
     sendJson(response, 401, { error: "Session is no longer valid." });
@@ -1800,8 +2146,7 @@ function handleJoin(request, response, payload) {
     selectedSkin: profile.selectedSkin,
     mode: profile.mode,
     sessionToken: session.token,
-    accountId: session.mode === "account" ? session.accountId : null,
-    activeCardIds: profile.activeCards.map((card) => card.id)
+    accountId: session.mode === "account" ? session.accountId : null
   });
 
   state.players.set(player.id, player);
@@ -1816,6 +2161,28 @@ function handleJoin(request, response, payload) {
   });
 
   pushEvent("join", { playerId: player.id, name: player.name });
+}
+
+function handleSpectate(request, response, payload) {
+  const session = resolveSession(request, payload);
+
+  if (!session) {
+    sendJson(response, 401, { error: "Choose guest or sign in before spectating." });
+    return;
+  }
+
+  const profile = buildProfileForSession(session);
+  if (!profile) {
+    sendJson(response, 401, { error: "Session is no longer valid." });
+    return;
+  }
+
+  const spectator = createSpectatorSession(session);
+  sendJson(response, 200, {
+    spectatorId: spectator.id,
+    message: "Spectating Colony.io",
+    profile
+  });
 }
 
 function serveFile(filePath, response) {
@@ -1844,6 +2211,16 @@ scheduleAccountSave();
 
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
+
+  if (request.method === "GET" && requestUrl.pathname === "/healthz") {
+    sendJson(response, 200, {
+      ok: true,
+      players: state.players.size,
+      spectators: state.spectators.size,
+      round: state.round.status
+    });
+    return;
+  }
 
   if (request.method === "GET" && requestUrl.pathname === "/auth/me") {
     handleAuthMe(request, response);
@@ -1893,6 +2270,11 @@ const server = http.createServer(async (request, response) => {
       handleJoin(request, response, payload);
       return;
     }
+
+    if (requestUrl.pathname === "/spectate") {
+      handleSpectate(request, response, payload);
+      return;
+    }
   }
 
   const safePath = requestUrl.pathname === "/" ? "/index.html" : requestUrl.pathname;
@@ -1912,6 +2294,26 @@ const webSocketServer = new WebSocketServer({ server });
 webSocketServer.on("connection", (socket, request) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
   const playerId = requestUrl.searchParams.get("playerId");
+  const spectatorId = requestUrl.searchParams.get("spectatorId");
+
+  if (spectatorId) {
+    const spectator = state.spectators.get(spectatorId);
+
+    if (!spectator) {
+      socket.close(1008, "Unknown spectator");
+      return;
+    }
+
+    spectator.socket = socket;
+    socket.send(JSON.stringify({ type: "welcome", spectatorId: spectator.id, spectating: true }));
+    socket.send(JSON.stringify(snapshotForViewer({ sessionToken: spectator.sessionToken, spectatorMode: true })));
+
+    socket.on("close", () => {
+      state.spectators.delete(spectator.id);
+    });
+    return;
+  }
+
   const player = state.players.get(playerId);
 
   if (!player) {
@@ -1921,7 +2323,7 @@ webSocketServer.on("connection", (socket, request) => {
 
   player.socket = socket;
   socket.send(JSON.stringify({ type: "welcome", playerId: player.id, name: player.name }));
-  socket.send(JSON.stringify(snapshotFor(player.id)));
+  socket.send(JSON.stringify(snapshotForViewer({ playerId: player.id })));
 
   socket.on("message", (rawMessage) => {
     try {
@@ -1937,6 +2339,7 @@ webSocketServer.on("connection", (socket, request) => {
         boost: Boolean(message.boost),
         hatch: Boolean(message.hatch),
         merge: Boolean(message.merge),
+        split: Boolean(message.split),
         attack: Boolean(message.attack),
         pointerX: Number(message.pointerX),
         pointerY: Number(message.pointerY)

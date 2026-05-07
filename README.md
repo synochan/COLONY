@@ -30,7 +30,9 @@ npm.cmd start
 - `WASD`: move the colony core
 - `Shift`: boost movement speed by spending score
 - `Space`: hatch one worker using a stored egg
-- `E`: switch workers into raid mode and attack nearby colonies
+- `Q`: merge 2 workers into 1 stronger worker
+- `F`: split 1 large worker into 2 smaller faster workers
+- `Left Click`: hold to send workers into raid mode and direct them
 
 ## Gameplay loop
 
@@ -38,3 +40,30 @@ npm.cmd start
 - Stored score progress becomes eggs over time.
 - Hatch more workers to expand your living colony.
 - Switch to raid mode to destroy enemy workers and collapse weakened enemy colonies.
+
+## Branch workflow
+
+- `development`: daily feature work, balancing, and testing
+- `production`: stable branch for live deploys only
+
+Suggested flow:
+
+1. Work and test on `development`
+2. Push with a specific commit message for each batch of changes
+3. Merge or fast-forward `production` only when the build feels stable
+
+## Deployment prep
+
+- `PORT` is already configurable through the environment
+- `GET /healthz` is available for host health checks
+- `Dockerfile` is included for container-based deployment
+
+## Best host for smooth live play
+
+This game uses a long-lived Node.js WebSocket server, so a host with persistent connections is the right fit.
+
+- Best balance of ease and performance: `Railway`
+- Also good: `Fly.io`, `Render`, or a small VPS on `Hetzner` / `DigitalOcean`
+- Avoid serverless-first platforms for the game server itself, because WebSocket-heavy realtime gameplay is a poor fit there
+
+For the smoothest live experience, deploy the server in the region closest to most of your players and keep the whole game on one always-on Node process or container.

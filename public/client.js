@@ -17,6 +17,7 @@ const ownedSkinGrid = document.getElementById("ownedSkinGrid");
 const registerStarterSkins = document.getElementById("registerStarterSkins");
 const guestStarterSkins = document.getElementById("guestStarterSkins");
 const enterArenaButton = document.getElementById("enterArenaButton");
+const spectateButton = document.getElementById("spectateButton");
 const logoutButton = document.getElementById("logoutButton");
 const guestButton = document.getElementById("guestButton");
 const registerButton = document.getElementById("registerButton");
@@ -51,6 +52,28 @@ const CARD_RARITY_LABELS = {
   rare: "Rare",
   epic: "Epic",
   legendary: "Legendary"
+};
+const CARD_ART_CODES = {
+  "trailblazer-legs": "SPD",
+  "tempered-stingers": "DMG",
+  "resin-shell": "HP",
+  "forager-instinct": "XP",
+  "quick-brood": "EGG",
+  "queen-plate": "ARM",
+  "rally-pheromones": "RNG",
+  "rich-spore-vault": "GOLD",
+  "nurse-lineage": "NRS",
+  "spearhead-drill": "PWR",
+  "swarm-foundry": "SWM",
+  "war-hymn": "WR",
+  "overcharged-glands": "OVR",
+  "royal-jelly-reserve": "ROY",
+  "shockframe-carapace": "SHK",
+  "monarchs-decree": "CROWN",
+  "worldroot-heart": "ROOT",
+  "cataclysm-brood": "CAT",
+  "golden-symphony": "GLD",
+  "apex-signal": "APX"
 };
 
 const SKINS = {
@@ -136,6 +159,7 @@ const inputState = {
   boost: false,
   hatch: false,
   merge: false,
+  split: false,
   attack: false,
   pointerX: 0,
   pointerY: 0
@@ -151,16 +175,25 @@ const viewport = {
 const BASE_WORLD_ZOOM = 0.84;
 const MIN_WORLD_ZOOM = 0.36;
 const WORKER_RANGE_VIEW_MULTIPLIER = 2;
+const ENTITY_SMOOTHING = 0.22;
+const CAMERA_SMOOTHING = 0.2;
+const ZOOM_SMOOTHING = 0.12;
 
 const clientState = {
   authToken: localStorage.getItem(AUTH_TOKEN_KEY) || "",
   profile: null,
   authMode: "guest",
   playerId: null,
+  spectatorId: null,
   socket: null,
   snapshot: null,
+  renderSnapshot: null,
   cardSelectionPending: false,
+  cardOverlayKey: "",
   connected: false,
+  spectatorMode: false,
+  spectatingFromDeath: false,
+  spectatorFocusId: null,
   camera: { x: 0, y: 0, zoom: BASE_WORLD_ZOOM },
   worldPointer: { x: 0, y: 0 },
   pointerInitialized: false,
@@ -238,6 +271,21 @@ function desiredZoomForPlayer(player) {
   return Math.max(MIN_WORLD_ZOOM, Math.min(BASE_WORLD_ZOOM, fitWidthZoom, fitHeightZoom));
 }
 
+function lerp(start, end, amount) {
+  return start + (end - start) * amount;
+}
+
+function smoothStep(current, target, factor) {
+  if (!Number.isFinite(current)) {
+    return target;
+  }
+  return lerp(current, target, factor);
+}
+
+function currentSnapshot() {
+  return clientState.renderSnapshot || clientState.snapshot;
+}
+
 function rarityPalette(rarity) {
   if (rarity === "legendary") {
     return {
@@ -261,6 +309,75 @@ function rarityPalette(rarity) {
     fill: "rgba(96, 255, 179, 0.18)",
     stroke: "rgba(96, 255, 179, 0.88)"
   };
+}
+
+function rarityCardTheme(rarity) {
+  if (rarity === "legendary") {
+    return {
+      top: "#ffdd85",
+      bottom: "#8a4d15",
+      edge: "#ffb74d"
+    };
+  }
+  if (rarity === "epic") {
+    return {
+      top: "#d39aff",
+      bottom: "#5c257a",
+      edge: "#bb6dff"
+    };
+  }
+  if (rarity === "rare") {
+    return {
+      top: "#9ed7ff",
+      bottom: "#1e4f82",
+      edge: "#61b8ff"
+    };
+  }
+  return {
+    top: "#9af7c9",
+    bottom: "#1b6d52",
+    edge: "#49d992"
+  };
+}
+
+function cardArtCode(card) {
+  return CARD_ART_CODES[card.id] || cardGlyph(card);
+}
+
+const cardArtCache = new Map();
+
+function cardArtDataUri(card) {
+  const key = `${card.id}:${card.rarity}`;
+  if (cardArtCache.has(key)) {
+    return cardArtCache.get(key);
+  }
+
+  const theme = rarityCardTheme(card.rarity);
+  const label = CARD_RARITY_LABELS[card.rarity] || card.rarity;
+  const code = cardArtCode(card);
+  const title = card.title;
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 196">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${theme.top}"/>
+          <stop offset="100%" stop-color="${theme.bottom}"/>
+        </linearGradient>
+      </defs>
+      <rect x="5" y="5" width="130" height="186" rx="18" fill="#120c23" stroke="${theme.edge}" stroke-width="4"/>
+      <rect x="13" y="13" width="114" height="170" rx="14" fill="url(#bg)" opacity="0.92"/>
+      <rect x="22" y="24" width="96" height="72" rx="12" fill="rgba(18,12,35,0.24)" stroke="rgba(255,255,255,0.22)" stroke-width="2"/>
+      <circle cx="70" cy="60" r="28" fill="rgba(18,12,35,0.2)" stroke="rgba(255,255,255,0.3)" stroke-width="2"/>
+      <text x="70" y="68" text-anchor="middle" font-family="Manrope, Arial" font-size="22" font-weight="800" fill="#fff6dc">${code}</text>
+      <text x="70" y="118" text-anchor="middle" font-family="Manrope, Arial" font-size="10" font-weight="700" fill="#fff6dc" letter-spacing="1.6">${label.toUpperCase()}</text>
+      <text x="70" y="142" text-anchor="middle" font-family="Cinzel, Georgia" font-size="14" font-weight="700" fill="#fff6dc">${title}</text>
+      <rect x="30" y="156" width="80" height="8" rx="4" fill="rgba(255,255,255,0.18)"/>
+      <rect x="30" y="156" width="${Math.min(80, Math.max(30, code.length * 12))}" height="8" rx="4" fill="rgba(255,246,220,0.78)"/>
+    </svg>
+  `;
+  const uri = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  cardArtCache.set(key, uri);
+  return uri;
 }
 
 function cardGlyph(card) {
@@ -312,8 +429,152 @@ function renderEnemyCardIcons(player, anchorX, startY) {
   context.textBaseline = "alphabetic";
 }
 
+function getPlayerFromSnapshot(snapshot, playerId = clientState.playerId) {
+  return snapshot?.players.find((player) => player.id === playerId) || null;
+}
+
+function aliveSpectateCandidates(snapshot = currentSnapshot()) {
+  const selfId = clientState.playerId;
+  return (snapshot?.players || [])
+    .filter((player) => player.alive && player.id !== selfId)
+    .sort((left, right) => right.score - left.score);
+}
+
+function getSpectateTarget(snapshot = currentSnapshot()) {
+  const candidates = aliveSpectateCandidates(snapshot);
+  if (!candidates.length) {
+    return null;
+  }
+
+  return candidates.find((player) => player.id === clientState.spectatorFocusId) || candidates[0];
+}
+
 function getYou() {
-  return clientState.snapshot?.players.find((player) => player.id === clientState.playerId) || null;
+  return getPlayerFromSnapshot(clientState.renderSnapshot || clientState.snapshot);
+}
+
+function cloneWorker(worker) {
+  return {
+    ...worker
+  };
+}
+
+function clonePlayer(player) {
+  return {
+    ...player,
+    activeCards: (player.activeCards || []).map((card) => ({ ...card })),
+    pendingCardChoices: (player.pendingCardChoices || []).map((choice) => ({
+      ...choice,
+      options: (choice.options || []).map((card) => ({ ...card }))
+    })),
+    workers: player.workers.map(cloneWorker)
+  };
+}
+
+function cloneSnapshot(snapshot) {
+  return {
+    ...snapshot,
+    players: snapshot.players.map(clonePlayer),
+    foods: snapshot.foods.map((food) => ({ ...food })),
+    growthNodes: (snapshot.growthNodes || []).map((node) => ({ ...node })),
+    leaderboard: snapshot.leaderboard.map((entry) => ({ ...entry })),
+    recentEvents: (snapshot.recentEvents || []).map((entry) => ({ ...entry })),
+    round: snapshot.round ? { ...snapshot.round } : null
+  };
+}
+
+function smoothWorkerState(currentWorker, targetWorker) {
+  currentWorker.x = smoothStep(currentWorker.x, targetWorker.x, ENTITY_SMOOTHING);
+  currentWorker.y = smoothStep(currentWorker.y, targetWorker.y, ENTITY_SMOOTHING);
+  currentWorker.radius = smoothStep(currentWorker.radius, targetWorker.radius, ENTITY_SMOOTHING);
+  currentWorker.food = smoothStep(currentWorker.food, targetWorker.food, ENTITY_SMOOTHING);
+  currentWorker.health = smoothStep(currentWorker.health, targetWorker.health, ENTITY_SMOOTHING);
+  currentWorker.healthMax = smoothStep(currentWorker.healthMax, targetWorker.healthMax, ENTITY_SMOOTHING);
+  currentWorker.mode = targetWorker.mode;
+}
+
+function smoothPlayerState(currentPlayer, targetPlayer) {
+  currentPlayer.x = smoothStep(currentPlayer.x, targetPlayer.x, ENTITY_SMOOTHING);
+  currentPlayer.y = smoothStep(currentPlayer.y, targetPlayer.y, ENTITY_SMOOTHING);
+  currentPlayer.radius = smoothStep(currentPlayer.radius, targetPlayer.radius, ENTITY_SMOOTHING);
+  currentPlayer.health = smoothStep(currentPlayer.health, targetPlayer.health, ENTITY_SMOOTHING);
+  currentPlayer.healthMax = smoothStep(currentPlayer.healthMax, targetPlayer.healthMax, ENTITY_SMOOTHING);
+  currentPlayer.score = smoothStep(currentPlayer.score, targetPlayer.score, ENTITY_SMOOTHING);
+  currentPlayer.commandRange = smoothStep(currentPlayer.commandRange, targetPlayer.commandRange, ENTITY_SMOOTHING);
+  currentPlayer.commandX = smoothStep(currentPlayer.commandX, targetPlayer.commandX, ENTITY_SMOOTHING);
+  currentPlayer.commandY = smoothStep(currentPlayer.commandY, targetPlayer.commandY, ENTITY_SMOOTHING);
+  currentPlayer.eggs = targetPlayer.eggs;
+  currentPlayer.maxEggs = targetPlayer.maxEggs;
+  currentPlayer.maxWorkers = targetPlayer.maxWorkers;
+  currentPlayer.alive = targetPlayer.alive;
+  currentPlayer.level = targetPlayer.level;
+  currentPlayer.skinId = targetPlayer.skinId;
+  currentPlayer.name = targetPlayer.name;
+  currentPlayer.mergeCooldownMs = targetPlayer.mergeCooldownMs;
+  currentPlayer.splitCooldownMs = targetPlayer.splitCooldownMs;
+  currentPlayer.respawnTimer = targetPlayer.respawnTimer;
+  currentPlayer.spawnProtectedMs = targetPlayer.spawnProtectedMs;
+  currentPlayer.matchXp = targetPlayer.matchXp;
+  currentPlayer.matchXpIntoLevel = targetPlayer.matchXpIntoLevel;
+  currentPlayer.matchXpForNextLevel = targetPlayer.matchXpForNextLevel;
+  currentPlayer.nextCardRewardLevel = targetPlayer.nextCardRewardLevel;
+  currentPlayer.activeCards = (targetPlayer.activeCards || []).map((card) => ({ ...card }));
+  currentPlayer.pendingCardChoices = (targetPlayer.pendingCardChoices || []).map((choice) => ({
+    ...choice,
+    options: (choice.options || []).map((card) => ({ ...card }))
+  }));
+
+  const currentWorkersById = new Map(currentPlayer.workers.map((worker) => [worker.id, worker]));
+  const nextWorkers = [];
+
+  for (const targetWorker of targetPlayer.workers) {
+    const currentWorker = currentWorkersById.get(targetWorker.id);
+    if (currentWorker) {
+      smoothWorkerState(currentWorker, targetWorker);
+      nextWorkers.push(currentWorker);
+    } else {
+      nextWorkers.push(cloneWorker(targetWorker));
+    }
+  }
+
+  currentPlayer.workers = nextWorkers;
+}
+
+function reconcileRenderSnapshot() {
+  const target = clientState.snapshot;
+  if (!target) {
+    clientState.renderSnapshot = null;
+    return;
+  }
+
+  if (!clientState.renderSnapshot) {
+    clientState.renderSnapshot = cloneSnapshot(target);
+    return;
+  }
+
+  const current = clientState.renderSnapshot;
+  current.serverTime = target.serverTime;
+  current.config = target.config;
+  current.round = target.round ? { ...target.round } : null;
+  current.foods = target.foods.map((food) => ({ ...food }));
+  current.growthNodes = (target.growthNodes || []).map((node) => ({ ...node }));
+  current.leaderboard = target.leaderboard.map((entry) => ({ ...entry }));
+  current.recentEvents = (target.recentEvents || []).map((entry) => ({ ...entry }));
+
+  const currentPlayersById = new Map(current.players.map((player) => [player.id, player]));
+  const nextPlayers = [];
+
+  for (const targetPlayer of target.players) {
+    const currentPlayer = currentPlayersById.get(targetPlayer.id);
+    if (currentPlayer) {
+      smoothPlayerState(currentPlayer, targetPlayer);
+      nextPlayers.push(currentPlayer);
+    } else {
+      nextPlayers.push(clonePlayer(targetPlayer));
+    }
+  }
+
+  current.players = nextPlayers;
 }
 
 function computeInputVector() {
@@ -420,64 +681,89 @@ function renderProfileSummary() {
     <p>Selected skin: <strong style="color:${skin.primary}">${skin.name}</strong></p>
     <p>Unlocked skins: ${profile.ownedSkins.length} / ${Object.keys(SKINS).length}</p>
     <p>${progress}</p>
-    <p>Hive cards: ${profile.activeCards.length}${profile.pendingCardChoices.length ? ` | Pending picks ${profile.pendingCardChoices.length}` : ""}</p>
-    <div class="card-tag-list">
-      ${
-        profile.activeCards.length
-          ? profile.activeCards
-              .map(
-                (card) =>
-                  `<span class="card-tag ${card.rarity}">${card.title}</span>`
-              )
-              .join("")
-          : '<span class="card-tag empty">No hive cards yet</span>'
-      }
-    </div>
   `;
 }
 
 function getPendingCardChoice() {
-  return clientState.profile?.pendingCardChoices?.[0] || null;
+  return getYou()?.pendingCardChoices?.[0] || null;
+}
+
+function cardChoiceOverlayKey(pendingChoice) {
+  if (!pendingChoice) {
+    return "";
+  }
+
+  const optionIds = (pendingChoice.options || []).map((card) => card.id).join("|");
+  return `${pendingChoice.rewardLevel}:${pendingChoice.rarity}:${optionIds}:${clientState.cardSelectionPending ? 1 : 0}`;
+}
+
+function applyChosenCardLocally(cardId, rewardLevel) {
+  const applyToSnapshot = (snapshot) => {
+    const player = getPlayerFromSnapshot(snapshot);
+    if (!player) {
+      return;
+    }
+
+    const choiceIndex = (player.pendingCardChoices || []).findIndex((choice) => choice.rewardLevel === rewardLevel);
+    if (choiceIndex < 0) {
+      return;
+    }
+
+    const choice = player.pendingCardChoices[choiceIndex];
+    const selectedCard = (choice.options || []).find((entry) => entry.id === cardId);
+    player.pendingCardChoices.splice(choiceIndex, 1);
+    if (selectedCard) {
+      player.activeCards = [...(player.activeCards || []), selectedCard];
+    }
+  };
+
+  applyToSnapshot(clientState.snapshot);
+  applyToSnapshot(clientState.renderSnapshot);
 }
 
 function renderCardChoiceOverlay() {
   const profile = clientState.profile;
+  const you = getYou();
   const pendingChoice = getPendingCardChoice();
-  const shouldShow = Boolean(profile && pendingChoice);
+  const shouldShow = Boolean(profile && you && pendingChoice);
 
   cardChoiceOverlay.classList.toggle("hidden", !shouldShow);
   if (!shouldShow) {
     cardChoiceGrid.innerHTML = "";
     cardChoiceHint.textContent = "";
     clientState.cardSelectionPending = false;
+    clientState.cardOverlayKey = "";
     return;
   }
 
   cardChoiceTitle.textContent = `Level ${pendingChoice.rewardLevel} reward: choose 1 ${CARD_RARITY_LABELS[pendingChoice.rarity]} card`;
   cardChoiceText.textContent =
-    profile.mode === "account"
-      ? "This choice is permanent for the account and its buffs apply to your hive immediately."
-      : "Guests cannot claim hive cards.";
+    "This buff applies to your current hive run immediately. Card progression is earned in-match.";
   cardChoiceHint.textContent = clientState.cardSelectionPending
     ? "Locking in your hive upgrade..."
     : "Pick 1 of the 3 cards below.";
-  cardChoiceGrid.innerHTML = pendingChoice.options
-    .map(
-      (card) => `
-        <button
-          type="button"
-          class="card-choice ${card.rarity}"
-          data-card-id="${card.id}"
-          data-reward-level="${pendingChoice.rewardLevel}"
-          ${clientState.cardSelectionPending ? "disabled" : ""}
-        >
-          <span class="card-choice-rarity">${CARD_RARITY_LABELS[card.rarity]}</span>
-          <strong>${card.title}</strong>
-          <span>${card.description}</span>
-        </button>
-      `
-    )
-    .join("");
+  const nextOverlayKey = cardChoiceOverlayKey(pendingChoice);
+  if (clientState.cardOverlayKey !== nextOverlayKey) {
+    cardChoiceGrid.innerHTML = pendingChoice.options
+      .map(
+        (card) => `
+          <button
+            type="button"
+            class="card-choice ${card.rarity}"
+            data-card-id="${card.id}"
+            data-reward-level="${pendingChoice.rewardLevel}"
+            ${clientState.cardSelectionPending ? "disabled" : ""}
+          >
+            <img class="card-choice-art" src="${cardArtDataUri(card)}" alt="${card.title}" draggable="false" />
+            <span class="card-choice-rarity">${CARD_RARITY_LABELS[card.rarity]}</span>
+            <strong>${card.title}</strong>
+            <span>${card.description}</span>
+          </button>
+        `
+      )
+      .join("");
+    clientState.cardOverlayKey = nextOverlayKey;
+  }
 }
 
 function renderAuthState() {
@@ -610,7 +896,7 @@ async function selectCard(cardId, rewardLevel) {
         rewardLevel
       }
     });
-    clientState.profile = payload.profile;
+    applyChosenCardLocally(cardId, rewardLevel);
   } catch (error) {
     setAuthMessage(error.message, true);
   } finally {
@@ -640,14 +926,87 @@ async function logout() {
   clearToken();
   clientState.profile = null;
   clientState.playerId = null;
+  clientState.spectatorId = null;
   clientState.snapshot = null;
+  clientState.renderSnapshot = null;
   clientState.connected = false;
+  clientState.spectatorMode = false;
+  clientState.spectatingFromDeath = false;
+  clientState.spectatorFocusId = null;
   setAuthMessage("Signed out.");
   renderAuthState();
 }
 
+function returnToMainMenu() {
+  if (clientState.socket) {
+    clientState.socket.close();
+  }
+
+  clientState.connected = false;
+  clientState.playerId = null;
+  clientState.spectatorId = null;
+  clientState.snapshot = null;
+  clientState.renderSnapshot = null;
+  clientState.pointerInitialized = false;
+  clientState.spectatorMode = false;
+  clientState.spectatingFromDeath = false;
+  clientState.spectatorFocusId = null;
+  inputState.attack = false;
+  joinOverlay.classList.remove("hidden");
+  setStatus("Returned to the main menu. Press Play Now to respawn when you're ready.");
+  setAuthMessage("Arena session closed. You can change skins, review cards, or jump back in.");
+  renderAuthState();
+}
+
+function toggleDeathSpectate() {
+  const you = getYou();
+  if (!you || you.alive || clientState.spectatorMode) {
+    return;
+  }
+
+  clientState.spectatingFromDeath = !clientState.spectatingFromDeath;
+  clientState.spectatorFocusId = clientState.spectatingFromDeath ? getSpectateTarget()?.id || null : null;
+  setStatus(
+    clientState.spectatingFromDeath
+      ? "Spectating another hive while you wait to respawn."
+      : "Returned to your hive respawn view."
+  );
+}
+
+async function startSpectating() {
+  if (!clientState.profile || !clientState.authToken) {
+    setAuthMessage("Create an account or continue as a guest first.", true);
+    return;
+  }
+
+  try {
+    spectateButton.disabled = true;
+    setStatus("Finding a hive to watch...");
+    const payload = await apiRequest("/spectate", {
+      method: "POST",
+      authToken: clientState.authToken,
+      body: {
+        authToken: clientState.authToken
+      }
+    });
+
+    clientState.spectatorId = payload.spectatorId;
+    clientState.playerId = null;
+    clientState.snapshot = null;
+    clientState.renderSnapshot = null;
+    clientState.spectatorMode = true;
+    clientState.spectatingFromDeath = false;
+    clientState.spectatorFocusId = null;
+    clientState.profile = payload.profile;
+    connectSocket("spectator");
+  } catch (error) {
+    setAuthMessage(error.message, true);
+    spectateButton.disabled = false;
+  }
+}
+
 function sendInput() {
-  if (!clientState.socket || clientState.socket.readyState !== WebSocket.OPEN) {
+  if (!clientState.socket || clientState.socket.readyState !== WebSocket.OPEN || clientState.spectatorMode) {
     return;
   }
 
@@ -660,6 +1019,7 @@ function sendInput() {
       boost: inputState.boost,
       hatch: inputState.hatch,
       merge: inputState.merge,
+      split: inputState.split,
       attack: inputState.attack,
       pointerX: clientState.worldPointer.x,
       pointerY: clientState.worldPointer.y
@@ -668,6 +1028,7 @@ function sendInput() {
 
   inputState.hatch = false;
   inputState.merge = false;
+  inputState.split = false;
 }
 
 function renderBackground() {
@@ -709,22 +1070,29 @@ function renderWorldBounds(snapshot) {
   context.restore();
 }
 
-function renderTerrainDecals() {
-  for (let i = 0; i < 26; i += 1) {
-    const worldX = 120 + (i * 173) % 2600;
-    const worldY = 100 + (i * 199) % 1600;
-    const screen = worldToScreen(worldX, worldY);
+function renderGrowthNodes(growthNodes, you) {
+  for (const node of growthNodes || []) {
+    const screen = worldToScreen(node.x, node.y);
+    const edible = Boolean(you && you.radius >= node.requiredRadius);
 
     context.beginPath();
-    context.fillStyle = "rgba(99, 224, 171, 0.08)";
-    context.arc(screen.x, screen.y, scaleWorld(16 + (i % 3) * 7), 0, Math.PI * 2);
+    context.fillStyle = edible ? "rgba(99, 224, 171, 0.16)" : "rgba(99, 224, 171, 0.08)";
+    context.arc(screen.x, screen.y, scaleWorld(node.coreRadius), 0, Math.PI * 2);
     context.fill();
 
     context.beginPath();
-    context.strokeStyle = "rgba(153, 255, 214, 0.12)";
-    context.lineWidth = Math.max(1, scaleWorld(2));
-    context.arc(screen.x, screen.y, scaleWorld(28 + (i % 4) * 5), 0, Math.PI * 2);
+    context.strokeStyle = edible ? "rgba(153, 255, 214, 0.42)" : "rgba(153, 255, 214, 0.14)";
+    context.lineWidth = Math.max(1, scaleWorld(2.4));
+    context.arc(screen.x, screen.y, scaleWorld(node.ringRadius), 0, Math.PI * 2);
     context.stroke();
+
+    if (edible) {
+      context.beginPath();
+      context.strokeStyle = "rgba(255, 209, 102, 0.35)";
+      context.lineWidth = Math.max(1, scaleWorld(1.2));
+      context.arc(screen.x, screen.y, scaleWorld(node.ringRadius + 6), 0, Math.PI * 2);
+      context.stroke();
+    }
   }
 }
 
@@ -776,6 +1144,14 @@ function renderPlayer(player, isYou) {
   context.arc(screen.x, screen.y, radius + scaleWorld(22), 0, Math.PI * 2);
   context.fill();
 
+  if ((player.spawnProtectedMs || 0) > 0) {
+    context.beginPath();
+    context.strokeStyle = "rgba(255, 244, 170, 0.72)";
+    context.lineWidth = Math.max(2, scaleWorld(3));
+    context.arc(screen.x, screen.y, radius + scaleWorld(12), 0, Math.PI * 2);
+    context.stroke();
+  }
+
   context.beginPath();
   context.fillStyle = skin.primary;
   context.shadowColor = isYou ? skin.glow : `${skin.primary}88`;
@@ -814,7 +1190,7 @@ function renderPlayer(player, isYou) {
     context.font = `700 ${Math.max(10, scaleWorld(12))}px Manrope`;
     context.textAlign = "center";
     const infoY = barY + Math.max(16, scaleWorld(20));
-    context.fillText(`Lv ${player.level} | HP ${player.health}/${player.healthMax}`, screen.x, infoY);
+    context.fillText(`Lv ${player.level} | HP ${Math.round(player.health)}/${Math.round(player.healthMax)}`, screen.x, infoY);
     renderEnemyCardIcons(player, screen.x, infoY + Math.max(6, scaleWorld(8)));
   }
 
@@ -855,13 +1231,24 @@ function renderMiniMap(snapshot) {
     context.fillRect(x, y, 2, 2);
   }
 
-  for (const player of snapshot.players) {
-    const skin = getSkin(player.skinId);
-    const x = left + (player.x / snapshot.config.mapWidth) * width;
-    const y = top + (player.y / snapshot.config.mapHeight) * height;
+  for (const node of snapshot.growthNodes || []) {
+    const x = left + (node.x / snapshot.config.mapWidth) * width;
+    const y = top + (node.y / snapshot.config.mapHeight) * height;
+    context.beginPath();
+    context.strokeStyle = "rgba(153, 255, 214, 0.6)";
+    context.lineWidth = 1;
+    context.arc(x, y, 3, 0, Math.PI * 2);
+    context.stroke();
+  }
+
+  const minimapTarget = clientState.spectatorMode ? getSpectateTarget(snapshot) : getYou();
+  if (minimapTarget) {
+    const skin = getSkin(minimapTarget.skinId);
+    const x = left + (minimapTarget.x / snapshot.config.mapWidth) * width;
+    const y = top + (minimapTarget.y / snapshot.config.mapHeight) * height;
     context.beginPath();
     context.fillStyle = skin.primary;
-    context.arc(x, y, player.id === clientState.playerId ? 5 : 4, 0, Math.PI * 2);
+    context.arc(x, y, 5, 0, Math.PI * 2);
     context.fill();
   }
 
@@ -874,7 +1261,8 @@ function renderMiniMap(snapshot) {
 function renderOverlay() {
   const you = getYou();
   const round = clientState.snapshot?.round;
-  if (!you) {
+  const spectateTarget = clientState.spectatorMode || clientState.spectatingFromDeath ? getSpectateTarget() : null;
+  if (!you && !clientState.spectatorMode) {
     context.fillStyle = "rgba(255,255,255,0.92)";
     context.font = "800 28px Cinzel";
     context.textAlign = "center";
@@ -885,28 +1273,65 @@ function renderOverlay() {
     return;
   }
 
+  if (clientState.spectatorMode) {
+    context.fillStyle = "rgba(255,255,255,0.92)";
+    context.font = "800 18px Cinzel";
+    context.textAlign = "left";
+    context.fillText("Spectator Mode", 20, 32);
+    context.font = "700 15px Manrope";
+    context.fillText(
+      spectateTarget ? `Watching ${spectateTarget.name} | Score ${spectateTarget.score}` : "Waiting for an active hive to watch",
+      20,
+      54
+    );
+    context.fillText("Press Esc to return to the main menu.", 20, 76);
+    if (round) {
+      context.fillText(`Round ${round.number} | Target ${clientState.snapshot.config.roundScoreTarget} score`, 20, 98);
+    }
+    return;
+  }
+
   const profile = clientState.profile;
+  const roundedScore = Math.round(you.score || 0);
+  const roundedHealth = Math.round(you.health || 0);
+  const roundedHealthMax = Math.round(you.healthMax || 0);
+  const roundedRadius = Math.round(you.radius || 0);
+  const roundedCommand = Math.round(you.commandRange || 0);
+  const matchProgress = you.matchXpForNextLevel ? `${Math.round(you.matchXpIntoLevel || 0)}/${Math.round(you.matchXpForNextLevel)}` : "Max";
+  const hudLeft = 20;
+  const hudTop = 196;
   context.fillStyle = "rgba(255,255,255,0.92)";
   context.font = "800 18px Cinzel";
   context.textAlign = "left";
-  context.fillText(`Score ${you.score}`, 20, 32);
+  context.fillText(`Score ${roundedScore}`, hudLeft, hudTop);
   context.font = "700 15px Manrope";
-  context.fillText(`Health ${you.health}/${you.healthMax} | Radius ${you.radius} | Command ${you.commandRange}`, 20, 54);
+  context.fillText(`Health ${roundedHealth}/${roundedHealthMax} | Radius ${roundedRadius} | Command ${roundedCommand}`, hudLeft, hudTop + 22);
   const mergeCooldown = Math.max(0, Math.ceil((you.mergeCooldownMs || 0) / 1000));
+  const splitCooldown = Math.max(0, Math.ceil((you.splitCooldownMs || 0) / 1000));
   const mergeStatus = mergeCooldown > 0 ? `Merge ${mergeCooldown}s` : "Merge Ready";
-  context.fillText(`Workers ${you.workers.length}/${you.maxWorkers} | Eggs ${you.eggs}/${you.maxEggs} | ${mergeStatus}`, 20, 76);
+  const splitStatus = splitCooldown > 0 ? `Split ${splitCooldown}s` : "Split Ready";
+  context.fillText(
+    `Workers ${you.workers.length}/${you.maxWorkers} | Eggs ${you.eggs}/${you.maxEggs} | ${mergeStatus} | ${splitStatus}`,
+    hudLeft,
+    hudTop + 44
+  );
   if (profile) {
-    const identityLabel = profile.mode === "account" ? `Hive Lv ${profile.level}` : "Guest";
+    const identityLabel = `Run Lv ${you.level}`;
     const skin = getSkin(profile.selectedSkin);
-    context.fillText(`${identityLabel} | Skin ${skin.name}`, 20, 98);
-    if (profile.pendingCardChoices.length) {
-      context.fillText(`Card Pick Ready | Lv ${profile.pendingCardChoices[0].rewardLevel} ${CARD_RARITY_LABELS[profile.pendingCardChoices[0].rarity]}`, 20, 120);
-    } else if (profile.mode === "account" && profile.nextCardRewardLevel) {
-      context.fillText(`Next card reward at Hive Lv ${profile.nextCardRewardLevel}`, 20, 120);
+    context.fillText(`${identityLabel} | Match XP ${matchProgress} | Skin ${skin.name}`, hudLeft, hudTop + 66);
+    if ((you.pendingCardChoices || []).length) {
+      context.fillText(
+        `Card Pick Ready | Lv ${you.pendingCardChoices[0].rewardLevel} ${CARD_RARITY_LABELS[you.pendingCardChoices[0].rarity]}`,
+        hudLeft,
+        hudTop + 88
+      );
+    } else if (you.nextCardRewardLevel) {
+      context.fillText(`Next card reward at Run Lv ${you.nextCardRewardLevel}`, hudLeft, hudTop + 88);
     }
   }
+  context.fillText("Large green circles can be eaten by your hive or by workers that grow large enough.", hudLeft, hudTop + 132);
   if (round) {
-    context.fillText(`Round ${round.number} | Target ${clientState.snapshot.config.roundScoreTarget} score`, 20, 142);
+    context.fillText(`Round ${round.number} | Target ${currentSnapshot().config.roundScoreTarget} score`, hudLeft, hudTop + 110);
   }
 
   if (round?.status === "ended") {
@@ -930,27 +1355,43 @@ function renderOverlay() {
     context.fillStyle = "#fff6dc";
     context.font = "800 32px Cinzel";
     context.textAlign = "center";
-    context.fillText("Colony collapsed", viewport.width / 2, viewport.height / 2 - 12);
+    context.fillText(
+      clientState.spectatingFromDeath && spectateTarget ? `Spectating ${spectateTarget.name}` : "Colony collapsed",
+      viewport.width / 2,
+      viewport.height / 2 - 12
+    );
     context.font = "700 18px Manrope";
-    context.fillText(`Respawning in ${you.respawnTimer.toFixed(1)}s`, viewport.width / 2, viewport.height / 2 + 22);
+    context.fillText(
+      clientState.spectatingFromDeath && spectateTarget
+        ? `Respawning in ${you.respawnTimer.toFixed(1)}s | Press V to return to your hive`
+        : `Respawning in ${you.respawnTimer.toFixed(1)}s | Press V to spectate`,
+      viewport.width / 2,
+      viewport.height / 2 + 22
+    );
   }
 }
 
 function drawFrame() {
   renderBackground();
+  reconcileRenderSnapshot();
 
-  const snapshot = clientState.snapshot;
+  const snapshot = clientState.renderSnapshot || clientState.snapshot;
   if (snapshot) {
     const you = getYou();
-    if (you) {
-      clientState.camera.x += (you.x - clientState.camera.x) * 0.14;
-      clientState.camera.y += (you.y - clientState.camera.y) * 0.14;
-      const desiredZoom = desiredZoomForPlayer(you);
-      clientState.camera.zoom += (desiredZoom - clientState.camera.zoom) * 0.08;
+    const cameraTarget =
+      clientState.spectatorMode || (clientState.spectatingFromDeath && (!you || !you.alive))
+        ? getSpectateTarget(snapshot)
+        : you;
+
+    if (cameraTarget) {
+      clientState.camera.x += (cameraTarget.x - clientState.camera.x) * CAMERA_SMOOTHING;
+      clientState.camera.y += (cameraTarget.y - clientState.camera.y) * CAMERA_SMOOTHING;
+      const desiredZoom = desiredZoomForPlayer(cameraTarget);
+      clientState.camera.zoom += (desiredZoom - clientState.camera.zoom) * ZOOM_SMOOTHING;
     }
 
     renderWorldBounds(snapshot);
-    renderTerrainDecals();
+    renderGrowthNodes(snapshot.growthNodes, you);
     renderFoods(snapshot.foods);
     for (const player of snapshot.players) {
       renderPlayer(player, player.id === clientState.playerId);
@@ -996,6 +1437,10 @@ async function joinGame() {
     });
 
     clientState.playerId = payload.playerId;
+    clientState.spectatorId = null;
+    clientState.spectatorMode = false;
+    clientState.spectatingFromDeath = false;
+    clientState.spectatorFocusId = null;
     clientState.profile = payload.profile;
     connectSocket();
   } catch (error) {
@@ -1004,26 +1449,42 @@ async function joinGame() {
   }
 }
 
-function connectSocket() {
+function connectSocket(mode = "player") {
   clientState.pointerInitialized = false;
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  clientState.socket = new WebSocket(`${protocol}://${window.location.host}?playerId=${clientState.playerId}`);
+  const query =
+    mode === "spectator"
+      ? `spectatorId=${encodeURIComponent(clientState.spectatorId)}`
+      : `playerId=${encodeURIComponent(clientState.playerId)}`;
+  clientState.socket = new WebSocket(`${protocol}://${window.location.host}?${query}`);
 
   clientState.socket.addEventListener("open", () => {
     clientState.connected = true;
     joinOverlay.classList.add("hidden");
-    setStatus("Move with WASD, hatch with Space, merge with Q, and raid with E.");
+    setStatus(
+      mode === "spectator"
+        ? "Spectating live match. Press Esc to return to the main menu."
+        : "Move with WASD, hatch with Space, merge with Q, split with F, and hold left click to raid."
+    );
     enterArenaButton.disabled = false;
+    spectateButton.disabled = false;
   });
 
   clientState.socket.addEventListener("message", (event) => {
     const payload = JSON.parse(event.data);
     if (payload.type === "state") {
       clientState.snapshot = payload;
+      clientState.spectatorMode = Boolean(payload.spectator?.active);
+      if (payload.spectator?.focusPlayerId && !clientState.spectatingFromDeath) {
+        clientState.spectatorFocusId = payload.spectator.focusPlayerId;
+      }
       if (payload.profile) {
         clientState.profile = payload.profile;
       }
-      const you = getYou();
+      const you = getPlayerFromSnapshot(payload);
+      if (you?.alive) {
+        clientState.spectatingFromDeath = false;
+      }
       if (you && !clientState.pointerInitialized) {
         clientState.worldPointer = { x: you.commandX, y: you.commandY };
       }
@@ -1035,7 +1496,12 @@ function connectSocket() {
   clientState.socket.addEventListener("close", () => {
     clientState.connected = false;
     clientState.playerId = null;
+    clientState.spectatorId = null;
     clientState.snapshot = null;
+    clientState.renderSnapshot = null;
+    clientState.spectatorMode = false;
+    clientState.spectatingFromDeath = false;
+    clientState.spectatorFocusId = null;
     joinOverlay.classList.remove("hidden");
     setStatus("Connection closed. Re-enter from your account or guest profile when you're ready.");
     renderAuthState();
@@ -1068,13 +1534,23 @@ function handleKeyChange(event, isPressed) {
     if (isPressed) {
       inputState.merge = true;
     }
-  } else if (key === "e") {
-    inputState.attack = isPressed;
+  } else if (key === "f") {
+    if (isPressed) {
+      inputState.split = true;
+    }
   } else if (key === " ") {
     if (isPressed) {
       inputState.hatch = true;
     }
     event.preventDefault();
+  } else if (key === "v") {
+    if (isPressed) {
+      toggleDeathSpectate();
+    }
+  } else if (key === "escape") {
+    if (isPressed && clientState.connected) {
+      returnToMainMenu();
+    }
   } else {
     return;
   }
@@ -1108,13 +1584,45 @@ ownedSkinGrid.addEventListener("click", (event) => {
   selectSkin(button.dataset.skin);
 });
 
-cardChoiceGrid.addEventListener("click", (event) => {
+cardChoiceOverlay.addEventListener("mousedown", (event) => {
+  event.stopPropagation();
+});
+
+cardChoiceOverlay.addEventListener("mouseup", (event) => {
+  event.stopPropagation();
+});
+
+cardChoiceOverlay.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+
+cardChoiceOverlay.addEventListener("pointerdown", (event) => {
+  event.stopPropagation();
+});
+
+cardChoiceOverlay.addEventListener("pointerup", (event) => {
+  event.stopPropagation();
+});
+
+cardChoiceGrid.addEventListener("pointerdown", (event) => {
   const button = event.target.closest("[data-card-id]");
-  if (!button || clientState.cardSelectionPending) {
+  if (!button) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (clientState.cardSelectionPending || button.disabled) {
     return;
   }
 
   selectCard(button.dataset.cardId, Number(button.dataset.rewardLevel));
+});
+
+cardChoiceGrid.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
 });
 
 for (const button of authModeButtons) {
@@ -1128,6 +1636,7 @@ guestButton.addEventListener("click", continueAsGuest);
 registerButton.addEventListener("click", registerAccount);
 loginButton.addEventListener("click", loginAccount);
 enterArenaButton.addEventListener("click", joinGame);
+spectateButton.addEventListener("click", startSpectating);
 logoutButton.addEventListener("click", logout);
 
 window.addEventListener("keydown", (event) => handleKeyChange(event, true));
@@ -1138,6 +1647,36 @@ window.visualViewport?.addEventListener("resize", resizeCanvas);
 canvas.addEventListener("mousemove", (event) => {
   updatePointerFromEvent(event);
   sendInput();
+});
+
+canvas.addEventListener("mousedown", (event) => {
+  if (event.button !== 0 || !joinOverlay.classList.contains("hidden") || clientState.spectatorMode) {
+    return;
+  }
+  updatePointerFromEvent(event);
+  inputState.attack = true;
+  sendInput();
+});
+
+canvas.addEventListener("mouseup", (event) => {
+  if (event.button !== 0) {
+    return;
+  }
+  updatePointerFromEvent(event);
+  inputState.attack = false;
+  sendInput();
+});
+
+canvas.addEventListener("mouseleave", () => {
+  if (!inputState.attack) {
+    return;
+  }
+  inputState.attack = false;
+  sendInput();
+});
+
+canvas.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
 });
 
 resizeCanvas();
