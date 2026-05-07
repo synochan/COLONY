@@ -57,6 +57,7 @@ Suggested flow:
 - `PORT` is already configurable through the environment
 - `GET /healthz` is available for host health checks
 - `Dockerfile` is included for container-based deployment
+- `DATA_DIR` is configurable so persistent account data can live on a mounted volume
 
 ## Best host for smooth live play
 
@@ -67,3 +68,25 @@ This game uses a long-lived Node.js WebSocket server, so a host with persistent 
 - Avoid serverless-first platforms for the game server itself, because WebSocket-heavy realtime gameplay is a poor fit there
 
 For the smoothest live experience, deploy the server in the region closest to most of your players and keep the whole game on one always-on Node process or container.
+
+## Railway deployment
+
+This repo is prepared for Railway:
+
+- root `Dockerfile` is ready
+- `railway.toml` sets Dockerfile builds, `/healthz` checks, and restart policy
+- the server supports graceful shutdown on deploy restarts
+- account data can be moved to a Railway volume through `DATA_DIR`
+
+Recommended Railway setup:
+
+1. Create a new Railway project from this GitHub repo
+2. Deploy from the `production` branch when you want the live version, or `development` for testing
+3. Add a Railway Volume and mount it at `/data`
+4. Set environment variable `DATA_DIR=/data`
+5. Leave `PORT` unset so Railway injects it automatically
+6. Choose the region closest to your players
+
+Important note:
+
+- If you do not mount a volume and set `DATA_DIR`, account progress stored in `accounts.json` will be ephemeral and can be lost on restart or redeploy

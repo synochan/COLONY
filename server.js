@@ -6,8 +6,11 @@ const { WebSocketServer } = require("ws");
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, "public");
-const DATA_DIR = path.join(__dirname, "data");
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(__dirname, "data");
 const ACCOUNTS_FILE = path.join(DATA_DIR, "accounts.json");
+let isShuttingDown = false;
 
 const MAP_WIDTH = 8200;
 const MAP_HEIGHT = 5200;
@@ -389,6 +392,16 @@ function scheduleAccountSave() {
     saveTimer = null;
     fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accountStore, null, 2));
   }, 300);
+}
+
+function flushAccountSaveNow() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+
+  ensureAccountStore();
+  fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accountStore, null, 2));
 }
 
 function createId(prefix) {
@@ -2219,8 +2232,9 @@ const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
 
   if (request.method === "GET" && requestUrl.pathname === "/healthz") {
-    sendJson(response, 200, {
-      ok: true,
+    sendJson(response, isShuttingDown ? 503 : 200, {
+      ok: !isShuttingDown,
+      shuttingDown: isShuttingDown,
       players: state.players.size,
       spectators: state.spectators.size,
       round: state.round.status
@@ -2365,6 +2379,42 @@ webSocketServer.on("connection", (socket, request) => {
 
 setInterval(updateGame, 1000 / TICK_RATE);
 setInterval(broadcastGameState, 1000 / BROADCAST_RATE);
+
+function shutdownGracefully(signal) {
+  if (isShuttingDown) {
+    return;
+  }
+
+  isShuttingDown = true;
+  try {
+    flushAccountSaveNow();
+  } catch (error) {
+    console.error("Failed to flush account data during shutdown:", error);
+  }
+
+  for (const player of state.players.values()) {
+    try {
+      player.socket?.close(1001, "Server shutting down");
+    } catch {}
+  }
+
+  for (const spectator of state.spectators.values()) {
+    try {
+      spectator.socket?.close(1001, "Server shutting down");
+    } catch {}
+  }
+
+  server.close(() => {
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    process.exit(0);
+  }, 5000).unref();
+}
+
+process.on("SIGTERM", () => shutdownGracefully("SIGTERM"));
+process.on("SIGINT", () => shutdownGracefully("SIGINT"));
 
 server.listen(PORT, () => {
   console.log(`Colony.io server running on http://localhost:${PORT}`);
