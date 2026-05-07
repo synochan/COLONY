@@ -4,6 +4,12 @@ const statusText = document.getElementById("statusText");
 const playerStats = document.getElementById("playerStats");
 const leaderboard = document.getElementById("leaderboard");
 const joinOverlay = document.getElementById("joinOverlay");
+const networkPanel = document.getElementById("networkPanel");
+const adminPanel = document.getElementById("adminPanel");
+const adminNetworkDashboard = document.getElementById("adminNetworkDashboard");
+const adminPlayersDashboard = document.getElementById("adminPlayersDashboard");
+const adminAccountsDashboard = document.getElementById("adminAccountsDashboard");
+const adminGuestsDashboard = document.getElementById("adminGuestsDashboard");
 const cardChoiceOverlay = document.getElementById("cardChoiceOverlay");
 const cardChoiceTitle = document.getElementById("cardChoiceTitle");
 const cardChoiceText = document.getElementById("cardChoiceText");
@@ -19,6 +25,14 @@ const guestStarterSkins = document.getElementById("guestStarterSkins");
 const enterArenaButton = document.getElementById("enterArenaButton");
 const spectateButton = document.getElementById("spectateButton");
 const logoutButton = document.getElementById("logoutButton");
+const adminRefreshButton = document.getElementById("adminRefreshButton");
+const adminTestBuildButton = document.getElementById("adminTestBuildButton");
+const adminGodModeButton = document.getElementById("adminGodModeButton");
+const adminHealButton = document.getElementById("adminHealButton");
+const adminScoreButton = document.getElementById("adminScoreButton");
+const adminWorkersButton = document.getElementById("adminWorkersButton");
+const adminCooldownsButton = document.getElementById("adminCooldownsButton");
+const adminResetRoundButton = document.getElementById("adminResetRoundButton");
 const guestButton = document.getElementById("guestButton");
 const registerButton = document.getElementById("registerButton");
 const loginButton = document.getElementById("loginButton");
@@ -180,6 +194,10 @@ const CAMERA_SMOOTHING = 0.2;
 const ZOOM_SMOOTHING = 0.12;
 const INPUT_SEND_INTERVAL_MS = 33;
 const PING_INTERVAL_MS = 2000;
+const INPUT_HEARTBEAT_MS = 120;
+const INPUT_IDLE_HEARTBEAT_MS = 280;
+const INPUT_POINTER_SEND_THRESHOLD_WORLD = 10;
+const MAX_CLIENT_SOCKET_BACKLOG_BYTES = 128 * 1024;
 
 const clientState = {
   authToken: localStorage.getItem(AUTH_TOKEN_KEY) || "",
@@ -206,12 +224,25 @@ const clientState = {
     snapshotsPerSecond: 0,
     snapshotAgeMs: 0,
     clockOffsetMs: 0,
+    inLossPct: 0,
+    outLossPct: 0,
+    snapshotsReceived: 0,
+    snapshotsMissed: 0,
+    inputSeq: 0,
+    lastAckInputSeq: 0,
+    maxSentInputSeq: 0,
     lastPingSentAt: 0,
     lastSnapshotReceivedAt: 0,
-    lastSnapshotIntervalMs: 0
+    lastSnapshotIntervalMs: 0,
+    lastSnapshotSequence: 0
   },
+  lastSentInputSignature: "",
+  lastSentInputAt: 0,
+  lastSentPointerWorld: { x: 0, y: 0 },
   registerStarterSkin: STARTER_SKINS[0],
-  guestStarterSkin: STARTER_SKINS[0]
+  guestStarterSkin: STARTER_SKINS[0],
+  adminDashboard: null,
+  adminDashboardTimer: null
 };
 
 function resizeCanvas() {
@@ -227,7 +258,9 @@ function resizeCanvas() {
 }
 
 function setStatus(text) {
-  statusText.textContent = text;
+  if (statusText) {
+    statusText.textContent = text;
+  }
 }
 
 function setAuthMessage(text, isError = false) {
@@ -624,6 +657,33 @@ function computeInputVector() {
   };
 }
 
+function currentInputSnapshot() {
+  const { x, y } = computeInputVector();
+  return {
+    x,
+    y,
+    boost: inputState.boost,
+    hatch: inputState.hatch,
+    merge: inputState.merge,
+    split: inputState.split,
+    attack: inputState.attack,
+    pointerX: clientState.worldPointer.x,
+    pointerY: clientState.worldPointer.y
+  };
+}
+
+function inputSignature(input) {
+  return [
+    input.x,
+    input.y,
+    input.boost ? 1 : 0,
+    input.hatch ? 1 : 0,
+    input.merge ? 1 : 0,
+    input.split ? 1 : 0,
+    input.attack ? 1 : 0
+  ].join("|");
+}
+
 function updatePointerFromEvent(event) {
   const rect = canvas.getBoundingClientRect();
   inputState.pointerX = event.clientX - rect.left;
@@ -634,6 +694,16 @@ function updatePointerFromEvent(event) {
 
 function recordSnapshotArrival(payload) {
   const now = performance.now();
+  if (payload.sequence) {
+    const previousSequence = clientState.network.lastSnapshotSequence || payload.sequence;
+    const missed = Math.max(0, payload.sequence - previousSequence - 1);
+    clientState.network.snapshotsMissed += missed;
+    clientState.network.snapshotsReceived += 1;
+    clientState.network.lastSnapshotSequence = payload.sequence;
+    const totalSnapshots = clientState.network.snapshotsReceived + clientState.network.snapshotsMissed;
+    clientState.network.inLossPct = totalSnapshots > 0 ? (clientState.network.snapshotsMissed / totalSnapshots) * 100 : 0;
+  }
+
   const previousAt = clientState.network.lastSnapshotReceivedAt;
   if (previousAt > 0) {
     const interval = now - previousAt;
@@ -657,6 +727,13 @@ function recordSnapshotArrival(payload) {
       ? lerp(clientState.network.clockOffsetMs, offset, 0.2)
       : offset;
   }
+
+  if (typeof payload.ackInputSeq === "number") {
+    clientState.network.lastAckInputSeq = Math.max(clientState.network.lastAckInputSeq, payload.ackInputSeq);
+  }
+  const outstandingInputs = Math.max(0, clientState.network.maxSentInputSeq - clientState.network.lastAckInputSeq);
+  const clientBufferedBytes = clientState.socket?.bufferedAmount || 0;
+  clientState.network.outLossPct = Math.min(100, outstandingInputs * 2.2 + clientBufferedBytes / 4096);
 }
 
 function sendPing() {
@@ -775,12 +852,195 @@ function renderProfileSummary() {
   profileSummary.innerHTML = `
     <div class="profile-title">
       <strong>${profile.displayName}</strong>
-      <span class="profile-badge">${profile.mode === "account" ? `Hive ${modeLabel}` : modeLabel}</span>
+      <span class="profile-badge">${profile.isAdmin ? "Admin Hive" : profile.mode === "account" ? `Hive ${modeLabel}` : modeLabel}</span>
     </div>
     <p>Selected skin: <strong style="color:${skin.primary}">${skin.name}</strong></p>
     <p>Unlocked skins: ${profile.ownedSkins.length} / ${Object.keys(SKINS).length}</p>
     <p>${progress}</p>
   `;
+}
+
+function renderAdminPanel() {
+  const isVisible = Boolean(clientState.connected && clientState.profile?.isAdmin);
+  adminPanel?.classList.toggle("hidden", !isVisible);
+  if (!isVisible) {
+    if (adminNetworkDashboard) {
+      adminNetworkDashboard.innerHTML = "";
+    }
+    if (adminPlayersDashboard) {
+      adminPlayersDashboard.innerHTML = "";
+    }
+    if (adminAccountsDashboard) {
+      adminAccountsDashboard.innerHTML = "";
+    }
+    if (adminGuestsDashboard) {
+      adminGuestsDashboard.innerHTML = "";
+    }
+    return;
+  }
+
+  const you = getYou();
+  const godModeLabel = you?.adminGodMode ? "God Mode: ON" : "God Mode: OFF";
+  if (adminGodModeButton) {
+    adminGodModeButton.textContent = godModeLabel;
+  }
+
+  renderAdminDashboard();
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function formatCompactNumber(value) {
+  return new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1
+  }).format(Number(value || 0));
+}
+
+function formatDuration(seconds) {
+  const whole = Math.max(0, Math.round(Number(seconds) || 0));
+  const mins = Math.floor(whole / 60);
+  const secs = whole % 60;
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+}
+
+function renderAdminDashboard() {
+  const dashboard = clientState.adminDashboard;
+  if (!dashboard) {
+    if (adminNetworkDashboard) {
+      adminNetworkDashboard.innerHTML = '<div class="admin-empty"><strong>Admin dashboard idle.</strong> Refresh to load live server data.</div>';
+    }
+    if (adminPlayersDashboard) {
+      adminPlayersDashboard.innerHTML = "";
+    }
+    if (adminAccountsDashboard) {
+      adminAccountsDashboard.innerHTML = "";
+    }
+    if (adminGuestsDashboard) {
+      adminGuestsDashboard.innerHTML = "";
+    }
+    return;
+  }
+
+  if (adminNetworkDashboard) {
+    const network = dashboard.network || {};
+    const metrics = [
+      ["Online", network.onlinePlayers ?? 0],
+      ["Spectators", network.spectators ?? 0],
+      ["Sessions", network.sessions ?? 0],
+      ["Tick / Broadcast", `${network.tickRate ?? 0} / ${network.broadcastRate ?? 0}`],
+      ["Heap / RSS", `${network.heapUsedMb ?? 0}MB / ${network.rssMb ?? 0}MB`],
+      ["Uptime", formatDuration(network.uptimeSec)],
+      ["Food / Growth", `${network.foods ?? 0} / ${network.growthNodes ?? 0}`],
+      ["Leaderboard Ver", network.leaderboardVersion ?? 0]
+    ];
+    adminNetworkDashboard.innerHTML = metrics
+      .map(
+        ([label, value]) => `
+          <div class="admin-metric">
+            <strong>${escapeHtml(label)}</strong>
+            <span class="admin-metric-value">${escapeHtml(value)}</span>
+          </div>
+        `
+      )
+      .join("");
+  }
+
+  if (adminPlayersDashboard) {
+    const players = Array.isArray(dashboard.players) ? dashboard.players : [];
+    adminPlayersDashboard.innerHTML = players.length
+      ? players
+          .map((entry) => {
+            const isAdmin = Boolean(entry.isAdmin);
+            const badge = isAdmin ? '<span class="admin-badge">Admin</span>' : "";
+            const moderationActions = isAdmin
+              ? '<div class="admin-inline-note">Protected admin session.</div>'
+              : `
+                  <div class="admin-actions">
+                    <button type="button" class="admin-action" data-admin-action="respawn_player" data-player-id="${escapeHtml(entry.id)}">Respawn</button>
+                    <button type="button" class="admin-action warn" data-admin-action="kill_player" data-player-id="${escapeHtml(entry.id)}">Collapse</button>
+                    <button type="button" class="admin-action warn" data-admin-action="kick_player" data-player-id="${escapeHtml(entry.id)}">Kick</button>
+                    <button type="button" class="admin-action danger" data-admin-action="ban_player" data-player-id="${escapeHtml(entry.id)}">Ban</button>
+                  </div>
+                `;
+            return `
+              <div class="admin-row">
+                <div class="admin-row-head">
+                  <strong>${escapeHtml(entry.name)}</strong>
+                  ${badge}
+                </div>
+                <div class="admin-row-meta">
+                  <span>${entry.alive ? "Alive" : "Down"} | Score ${formatCompactNumber(entry.score)} | Run Lv ${escapeHtml(entry.level)}</span>
+                  <span>Workers ${escapeHtml(entry.workers)} | HP ${escapeHtml(entry.health)}/${escapeHtml(entry.healthMax)}</span>
+                </div>
+                <div class="admin-row-meta">
+                  <span>${entry.accountId ? "Account" : "Guest"}${entry.socketBufferedBytes ? ` | Backlog ${formatCompactNumber(entry.socketBufferedBytes)}B` : ""}</span>
+                </div>
+                ${moderationActions}
+              </div>
+            `;
+          })
+          .join("")
+      : '<div class="admin-empty"><strong>No live players.</strong> The arena is waiting for challengers.</div>';
+  }
+
+  if (adminAccountsDashboard) {
+    const accounts = Array.isArray(dashboard.accounts) ? dashboard.accounts : [];
+    adminAccountsDashboard.innerHTML = accounts.length
+      ? accounts
+          .map((account) => {
+            const badge = account.isAdmin || account.role === "admin" ? '<span class="admin-badge">Admin</span>' : "";
+            const unbanButton = account.banned
+              ? `<button type="button" class="admin-action" data-admin-action="unban_account" data-account-id="${escapeHtml(account.id)}">Unban Account</button>`
+              : "";
+            return `
+              <div class="admin-row">
+                <div class="admin-row-head">
+                  <strong>${escapeHtml(account.username)}</strong>
+                  ${badge}
+                </div>
+                <div class="admin-row-meta">
+                  <span>${escapeHtml(account.role || "player")} | Hive Lv ${escapeHtml(account.level)} | XP ${formatCompactNumber(account.xp)}</span>
+                  <span>Matches ${escapeHtml(account.totalMatches)} | Kills ${escapeHtml(account.totalKills)}</span>
+                </div>
+                <div class="admin-row-meta">
+                  <span>${account.banned ? `Banned${account.banReason ? `: ${escapeHtml(account.banReason)}` : ""}` : "Active account"}</span>
+                  <span>Skins ${escapeHtml(account.ownedSkins)}</span>
+                </div>
+                ${unbanButton ? `<div class="admin-actions">${unbanButton}</div>` : ""}
+              </div>
+            `;
+          })
+          .join("")
+      : '<div class="admin-empty"><strong>No saved accounts.</strong></div>';
+  }
+
+  if (adminGuestsDashboard) {
+    const bannedGuests = Array.isArray(dashboard.bannedGuests) ? dashboard.bannedGuests : [];
+    adminGuestsDashboard.innerHTML = bannedGuests.length
+      ? bannedGuests
+          .map(
+            (guestName) => `
+              <div class="admin-row">
+                <div class="admin-row-head">
+                  <strong>${escapeHtml(guestName)}</strong>
+                </div>
+                <div class="admin-actions">
+                  <button type="button" class="admin-action" data-admin-action="unban_guest" data-guest-name="${escapeHtml(guestName)}">Unban Guest</button>
+                </div>
+              </div>
+            `
+          )
+          .join("")
+      : '<div class="admin-empty"><strong>No banned guests.</strong></div>';
+  }
 }
 
 function getPendingCardChoice() {
@@ -866,9 +1126,11 @@ function renderCardChoiceOverlay() {
 }
 
 function renderAuthState() {
+  ensureAdminDashboardPolling();
   if (clientState.connected) {
     joinOverlay.classList.add("hidden");
     renderCardChoiceOverlay();
+    renderAdminPanel();
     return;
   }
 
@@ -886,6 +1148,7 @@ function renderAuthState() {
 
   switchAuthMode(clientState.authMode);
   renderCardChoiceOverlay();
+  renderAdminPanel();
 }
 
 async function restoreSession() {
@@ -1005,6 +1268,67 @@ async function selectCard(cardId, rewardLevel) {
   }
 }
 
+async function fetchAdminDashboard() {
+  if (!clientState.profile?.isAdmin) {
+    return;
+  }
+
+  try {
+    const payload = await apiRequest("/admin/dashboard", {
+      authToken: clientState.authToken
+    });
+    clientState.adminDashboard = payload;
+    renderAdminPanel();
+  } catch (error) {
+    setAuthMessage(error.message, true);
+  }
+}
+
+function stopAdminDashboardPolling() {
+  if (clientState.adminDashboardTimer) {
+    clearInterval(clientState.adminDashboardTimer);
+    clientState.adminDashboardTimer = null;
+  }
+}
+
+function ensureAdminDashboardPolling() {
+  if (!(clientState.connected && clientState.profile?.isAdmin)) {
+    stopAdminDashboardPolling();
+    return;
+  }
+  if (clientState.adminDashboardTimer) {
+    return;
+  }
+  clientState.adminDashboardTimer = setInterval(fetchAdminDashboard, 2500);
+}
+
+async function runAdminAction(action, extra = {}) {
+  if (!clientState.profile?.isAdmin) {
+    return;
+  }
+
+  try {
+    const payload = await apiRequest("/admin/action", {
+      method: "POST",
+      authToken: clientState.authToken,
+      body: { action, ...extra }
+    });
+    if (payload.profile) {
+      clientState.profile = payload.profile;
+    }
+    if (payload.dashboard) {
+      clientState.adminDashboard = payload.dashboard;
+    }
+    const you = getYou();
+    if (you && payload.adminState) {
+      you.adminGodMode = Boolean(payload.adminState.godMode);
+    }
+    renderAdminPanel();
+  } catch (error) {
+    setAuthMessage(error.message, true);
+  }
+}
+
 async function logout() {
   try {
     if (clientState.authToken) {
@@ -1028,11 +1352,15 @@ async function logout() {
 
   clearToken();
   clientState.profile = null;
+  clientState.adminDashboard = null;
+  stopAdminDashboardPolling();
   clientState.playerId = null;
   clientState.spectatorId = null;
   clientState.snapshot = null;
   clientState.renderSnapshot = null;
   clientState.connected = false;
+  clientState.lastSentInputSignature = "";
+  clientState.lastSentInputAt = 0;
   clientState.spectatorMode = false;
   clientState.spectatingFromDeath = false;
   clientState.spectatorFocusId = null;
@@ -1055,9 +1383,13 @@ function returnToMainMenu() {
   clientState.snapshot = null;
   clientState.renderSnapshot = null;
   clientState.pointerInitialized = false;
+  clientState.lastSentInputSignature = "";
+  clientState.lastSentInputAt = 0;
   clientState.spectatorMode = false;
   clientState.spectatingFromDeath = false;
   clientState.spectatorFocusId = null;
+  clientState.adminDashboard = null;
+  stopAdminDashboardPolling();
   inputState.attack = false;
   joinOverlay.classList.remove("hidden");
   setStatus("Returned to the main menu. Press Play Now to respawn when you're ready.");
@@ -1112,26 +1444,62 @@ async function startSpectating() {
   }
 }
 
-function sendInput() {
+function sendInput(force = false) {
   if (!clientState.socket || clientState.socket.readyState !== WebSocket.OPEN || clientState.spectatorMode) {
     return;
   }
 
-  const { x, y } = computeInputVector();
+  if ((clientState.socket.bufferedAmount || 0) > MAX_CLIENT_SOCKET_BACKLOG_BYTES && !force) {
+    return;
+  }
+
+  const now = performance.now();
+  const nextInput = currentInputSnapshot();
+  const signature = inputSignature(nextInput);
+  const pointerDelta = Math.hypot(
+    nextInput.pointerX - clientState.lastSentPointerWorld.x,
+    nextInput.pointerY - clientState.lastSentPointerWorld.y
+  );
+  const activeInput = Boolean(
+    nextInput.x ||
+      nextInput.y ||
+      nextInput.boost ||
+      nextInput.attack ||
+      nextInput.hatch ||
+      nextInput.merge ||
+      nextInput.split
+  );
+  const minResendMs = activeInput ? INPUT_HEARTBEAT_MS : INPUT_IDLE_HEARTBEAT_MS;
+  const changed = signature !== clientState.lastSentInputSignature;
+  const pointerChanged = pointerDelta >= INPUT_POINTER_SEND_THRESHOLD_WORLD;
+
+  if (!force && !changed && !pointerChanged && now - clientState.lastSentInputAt < minResendMs) {
+    return;
+  }
+
+  const inputSeq = ++clientState.network.inputSeq;
+  clientState.network.maxSentInputSeq = inputSeq;
   clientState.socket.send(
     JSON.stringify({
       type: "input",
-      x,
-      y,
-      boost: inputState.boost,
-      hatch: inputState.hatch,
-      merge: inputState.merge,
-      split: inputState.split,
-      attack: inputState.attack,
-      pointerX: clientState.worldPointer.x,
-      pointerY: clientState.worldPointer.y
+      inputSeq,
+      x: nextInput.x,
+      y: nextInput.y,
+      boost: nextInput.boost,
+      hatch: nextInput.hatch,
+      merge: nextInput.merge,
+      split: nextInput.split,
+      attack: nextInput.attack,
+      pointerX: Math.round(nextInput.pointerX),
+      pointerY: Math.round(nextInput.pointerY)
     })
   );
+  clientState.lastSentInputSignature = signature;
+  clientState.lastSentInputAt = now;
+  clientState.lastSentPointerWorld = {
+    x: nextInput.pointerX,
+    y: nextInput.pointerY
+  };
 
   inputState.hatch = false;
   inputState.merge = false;
@@ -1365,6 +1733,22 @@ function renderMiniMap(snapshot) {
   context.fillText("Arena map", left + 10, top + 15);
 }
 
+function renderNetworkPanel() {
+  if (!networkPanel) {
+    return;
+  }
+
+  const snapshot = clientState.snapshot;
+  const onlinePlayers = snapshot?.config?.onlinePlayers ?? snapshot?.players?.length ?? 0;
+  networkPanel.textContent =
+    `Ping ${Math.round(clientState.network.pingMs || 0)}ms` +
+    ` | Jitter ${Math.round(clientState.network.jitterMs || 0)}ms` +
+    ` | Snap ${Math.round(clientState.network.snapshotsPerSecond || 0)}/s` +
+    ` | In ${Math.max(0, clientState.network.inLossPct || 0).toFixed(1)}%` +
+    ` | Out ${Math.max(0, clientState.network.outLossPct || 0).toFixed(1)}%` +
+    ` | Online ${onlinePlayers}`;
+}
+
 function renderOverlay() {
   const you = getYou();
   const round = clientState.snapshot?.round;
@@ -1405,7 +1789,6 @@ function renderOverlay() {
   const roundedRadius = Math.round(you.radius || 0);
   const roundedCommand = Math.round(you.commandRange || 0);
   const matchProgress = you.matchXpForNextLevel ? `${Math.round(you.matchXpIntoLevel || 0)}/${Math.round(you.matchXpForNextLevel)}` : "Max";
-  const networkLine = `Ping ${Math.round(clientState.network.pingMs || 0)}ms | Jitter ${Math.round(clientState.network.jitterMs || 0)}ms | Snap ${Math.round(clientState.network.snapshotsPerSecond || 0)}/s`;
   const hudLeft = 20;
   const hudTop = 196;
   context.fillStyle = "rgba(255,255,255,0.92)";
@@ -1437,10 +1820,9 @@ function renderOverlay() {
       context.fillText(`Next card reward at Run Lv ${you.nextCardRewardLevel}`, hudLeft, hudTop + 88);
     }
   }
-  context.fillText(networkLine, hudLeft, hudTop + 110);
   context.fillText("Large green circles can be eaten by your hive or by workers that grow large enough.", hudLeft, hudTop + 132);
   if (round) {
-    context.fillText(`Round ${round.number} | Target ${currentSnapshot().config.roundScoreTarget} score`, hudLeft, hudTop + 154);
+    context.fillText(`Round ${round.number} | Target ${currentSnapshot().config.roundScoreTarget} score`, hudLeft, hudTop + 110);
   }
 
   if (round?.status === "ended") {
@@ -1508,10 +1890,10 @@ function drawFrame() {
     for (const player of snapshot.players) {
       renderPlayer(player, player.id === clientState.playerId);
     }
-    renderMiniMap(snapshot);
   }
 
   renderOverlay();
+  renderNetworkPanel();
   requestAnimationFrame(drawFrame);
 }
 
@@ -1563,6 +1945,9 @@ async function joinGame() {
 
 function connectSocket(mode = "player") {
   clientState.pointerInitialized = false;
+  clientState.lastSentInputSignature = "";
+  clientState.lastSentInputAt = 0;
+  clientState.lastSentPointerWorld = { x: 0, y: 0 };
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const query =
     mode === "spectator"
@@ -1589,6 +1974,10 @@ function connectSocket(mode = "player") {
     }
     clientState.pingTimer = setInterval(sendPing, PING_INTERVAL_MS);
     sendPing();
+    ensureAdminDashboardPolling();
+    if (clientState.profile?.isAdmin) {
+      fetchAdminDashboard();
+    }
   });
 
   clientState.socket.addEventListener("message", (event) => {
@@ -1616,6 +2005,8 @@ function connectSocket(mode = "player") {
       }
       renderStats();
       renderAuthState();
+      renderAdminPanel();
+      ensureAdminDashboardPolling();
     }
   });
 
@@ -1633,6 +2024,10 @@ function connectSocket(mode = "player") {
     clientState.spectatorMode = false;
     clientState.spectatingFromDeath = false;
     clientState.spectatorFocusId = null;
+    clientState.lastSentInputSignature = "";
+    clientState.lastSentInputAt = 0;
+    clientState.adminDashboard = null;
+    stopAdminDashboardPolling();
     joinOverlay.classList.remove("hidden");
     setStatus("Connection closed. Re-enter from your account or guest profile when you're ready.");
     renderAuthState();
@@ -1686,7 +2081,7 @@ function handleKeyChange(event, isPressed) {
     return;
   }
 
-  sendInput();
+  sendInput(true);
 }
 
 registerStarterSkins.addEventListener("click", (event) => {
@@ -1769,6 +2164,33 @@ loginButton.addEventListener("click", loginAccount);
 enterArenaButton.addEventListener("click", joinGame);
 spectateButton.addEventListener("click", startSpectating);
 logoutButton.addEventListener("click", logout);
+adminRefreshButton?.addEventListener("click", fetchAdminDashboard);
+adminTestBuildButton?.addEventListener("click", () => runAdminAction("apply_test_build"));
+adminGodModeButton?.addEventListener("click", () => runAdminAction("toggle_god_mode"));
+adminHealButton?.addEventListener("click", () => runAdminAction("heal_refill"));
+adminScoreButton?.addEventListener("click", () => runAdminAction("add_score", { amount: 5000 }));
+adminWorkersButton?.addEventListener("click", () => runAdminAction("spawn_workers", { amount: 4 }));
+adminCooldownsButton?.addEventListener("click", () => runAdminAction("reset_cooldowns"));
+adminResetRoundButton?.addEventListener("click", () => runAdminAction("reset_round"));
+adminPanel?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-admin-action]");
+  if (!button) {
+    return;
+  }
+
+  const action = button.dataset.adminAction;
+  const extra = {};
+  if (button.dataset.playerId) {
+    extra.targetPlayerId = button.dataset.playerId;
+  }
+  if (button.dataset.accountId) {
+    extra.targetAccountId = button.dataset.accountId;
+  }
+  if (button.dataset.guestName) {
+    extra.targetGuestName = button.dataset.guestName;
+  }
+  runAdminAction(action, extra);
+});
 
 window.addEventListener("keydown", (event) => handleKeyChange(event, true));
 window.addEventListener("keyup", (event) => handleKeyChange(event, false));
@@ -1777,7 +2199,7 @@ window.visualViewport?.addEventListener("resize", resizeCanvas);
 
 canvas.addEventListener("mousemove", (event) => {
   updatePointerFromEvent(event);
-  sendInput();
+  sendInput(false);
 });
 
 canvas.addEventListener("mousedown", (event) => {
@@ -1786,7 +2208,7 @@ canvas.addEventListener("mousedown", (event) => {
   }
   updatePointerFromEvent(event);
   inputState.attack = true;
-  sendInput();
+  sendInput(true);
 });
 
 canvas.addEventListener("mouseup", (event) => {
@@ -1795,7 +2217,7 @@ canvas.addEventListener("mouseup", (event) => {
   }
   updatePointerFromEvent(event);
   inputState.attack = false;
-  sendInput();
+  sendInput(true);
 });
 
 canvas.addEventListener("mouseleave", () => {
@@ -1803,7 +2225,7 @@ canvas.addEventListener("mouseleave", () => {
     return;
   }
   inputState.attack = false;
-  sendInput();
+  sendInput(true);
 });
 
 canvas.addEventListener("contextmenu", (event) => {
