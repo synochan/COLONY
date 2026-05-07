@@ -23,7 +23,7 @@ npm.cmd install
 npm.cmd start
 ```
 
-3. Open `http://localhost:3000` in multiple browser tabs to test multiplayer, up to 30 concurrent players.
+3. Open `[http://localhost:3000](https://colony.up.railway.app)` in multiple browser tabs to test multiplayer, up to 30 concurrent players.
 
 ## Controls
 
