@@ -488,11 +488,30 @@ function cloneSnapshot(snapshot) {
   return {
     ...snapshot,
     players: snapshot.players.map(clonePlayer),
-    foods: snapshot.foods.map((food) => ({ ...food })),
+    foods: (snapshot.foods || []).map((food) => ({ ...food })),
     growthNodes: (snapshot.growthNodes || []).map((node) => ({ ...node })),
-    leaderboard: snapshot.leaderboard.map((entry) => ({ ...entry })),
+    leaderboard: (snapshot.leaderboard || []).map((entry) => ({ ...entry })),
     recentEvents: (snapshot.recentEvents || []).map((entry) => ({ ...entry })),
     round: snapshot.round ? { ...snapshot.round } : null
+  };
+}
+
+function mergeIncomingSnapshot(previousSnapshot, nextSnapshot) {
+  if (!previousSnapshot) {
+    return nextSnapshot;
+  }
+
+  return {
+    ...previousSnapshot,
+    ...nextSnapshot,
+    config: nextSnapshot.config || previousSnapshot.config,
+    foods: nextSnapshot.foods || previousSnapshot.foods || [],
+    growthNodes: nextSnapshot.growthNodes || previousSnapshot.growthNodes || [],
+    leaderboard: nextSnapshot.leaderboard || previousSnapshot.leaderboard || [],
+    recentEvents: nextSnapshot.recentEvents || previousSnapshot.recentEvents || [],
+    profile: nextSnapshot.profile || previousSnapshot.profile || null,
+    round: nextSnapshot.round || previousSnapshot.round || null,
+    players: nextSnapshot.players || previousSnapshot.players || []
   };
 }
 
@@ -569,10 +588,18 @@ function reconcileRenderSnapshot() {
   current.serverTime = target.serverTime;
   current.config = target.config;
   current.round = target.round ? { ...target.round } : null;
-  current.foods = target.foods.map((food) => ({ ...food }));
-  current.growthNodes = (target.growthNodes || []).map((node) => ({ ...node }));
-  current.leaderboard = target.leaderboard.map((entry) => ({ ...entry }));
-  current.recentEvents = (target.recentEvents || []).map((entry) => ({ ...entry }));
+  if (target.foods) {
+    current.foods = target.foods.map((food) => ({ ...food }));
+  }
+  if (target.growthNodes) {
+    current.growthNodes = target.growthNodes.map((node) => ({ ...node }));
+  }
+  if (target.leaderboard) {
+    current.leaderboard = target.leaderboard.map((entry) => ({ ...entry }));
+  }
+  if (target.recentEvents) {
+    current.recentEvents = target.recentEvents.map((entry) => ({ ...entry }));
+  }
 
   const currentPlayersById = new Map(current.players.map((player) => [player.id, player]));
   const nextPlayers = [];
@@ -1572,7 +1599,7 @@ function connectSocket(mode = "player") {
     }
     if (payload.type === "state") {
       recordSnapshotArrival(payload);
-      clientState.snapshot = payload;
+      clientState.snapshot = mergeIncomingSnapshot(clientState.snapshot, payload);
       clientState.spectatorMode = Boolean(payload.spectator?.active);
       if (payload.spectator?.focusPlayerId && !clientState.spectatingFromDeath) {
         clientState.spectatorFocusId = payload.spectator.focusPlayerId;

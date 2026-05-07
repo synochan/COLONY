@@ -336,6 +336,9 @@ const state = {
   spectators: new Map(),
   foods: [],
   growthNodes: [],
+  resourcesVersion: 1,
+  leaderboardVersion: 1,
+  profileVersion: 1,
   events: [],
   nextEventId: 1,
   round: {
@@ -351,6 +354,7 @@ const state = {
 const sessions = new Map();
 let lastTick = Date.now();
 let saveTimer = null;
+let broadcastSequence = 0;
 
 function ensureAccountStore() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -413,6 +417,14 @@ function createId(prefix) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function bumpResourcesVersion() {
+  state.resourcesVersion += 1;
+}
+
+function bumpLeaderboardVersion() {
+  state.leaderboardVersion += 1;
 }
 
 function distance(a, b) {
@@ -658,8 +670,13 @@ function ensureFoodTarget() {
   if (state.round.status !== "running") {
     return;
   }
+  let changed = false;
   while (state.foods.length < FOOD_TARGET) {
     state.foods.push(spawnFood());
+    changed = true;
+  }
+  if (changed) {
+    bumpResourcesVersion();
   }
 }
 
@@ -667,9 +684,13 @@ function ensureGrowthNodeTarget() {
   if (state.round.status !== "running") {
     return;
   }
-
+  let changed = false;
   while (state.growthNodes.length < GROWTH_NODE_TARGET) {
     state.growthNodes.push(spawnGrowthNode());
+    changed = true;
+  }
+  if (changed) {
+    bumpResourcesVersion();
   }
 }
 
@@ -954,6 +975,8 @@ function resetArenaState() {
   state.growthNodes = [];
   state.events = [];
   state.nextEventId = 1;
+  bumpResourcesVersion();
+  bumpLeaderboardVersion();
   ensureFoodTarget();
   ensureGrowthNodeTarget();
 }
@@ -1213,6 +1236,7 @@ function removeFood(foodId) {
   const index = state.foods.findIndex((food) => food.id === foodId);
   if (index >= 0) {
     state.foods.splice(index, 1);
+    bumpResourcesVersion();
   }
 }
 
@@ -1220,6 +1244,7 @@ function removeGrowthNode(nodeId) {
   const index = state.growthNodes.findIndex((node) => node.id === nodeId);
   if (index >= 0) {
     state.growthNodes.splice(index, 1);
+    bumpResourcesVersion();
   }
 }
 
@@ -1311,6 +1336,7 @@ function grantScore(player, amount) {
   const healthCapGain = Math.max(0, player.healthMax - previousHealthMax);
   const bonusHealth = finalAmount * 0.18;
   player.health = clamp(previousHealth + healthCapGain + bonusHealth, 0, player.healthMax);
+  bumpLeaderboardVersion();
   awardAccountXp(player, finalAmount);
   grantMatchXp(player, finalAmount);
 }
@@ -1318,6 +1344,7 @@ function grantScore(player, amount) {
 function spendScore(player, amount) {
   player.score = Math.max(0, player.score - amount);
   refreshPlayerDerivedStats(player);
+  bumpLeaderboardVersion();
 }
 
 function resetPlayer(player) {
@@ -1350,6 +1377,7 @@ function resetPlayer(player) {
   player.mergeCooldownUntil = 0;
   player.splitCooldownUntil = 0;
   player.alive = true;
+  bumpLeaderboardVersion();
   pushEvent("respawn", { playerId: player.id, name: player.name });
 }
 
@@ -1363,6 +1391,7 @@ function collapsePlayer(attacker, victim) {
   grantScore(attacker, COLONY_KILL_SCORE_REWARD);
   grantScore(attacker, stolenScore);
   incrementAccountStat(attacker, "totalKills");
+  bumpLeaderboardVersion();
   pushEvent("colony_down", {
     attacker: attacker.name,
     victim: victim.name,
@@ -1898,13 +1927,16 @@ function resolveSpectatorFocusId(players, requestedPlayerId) {
   return alivePlayers[0]?.id || players[0]?.id || null;
 }
 
-function snapshotForViewer({ playerId = null, sessionToken = "", spectatorMode = false, spectatorFocusId = null } = {}) {
+function snapshotForViewer({ playerId = null, sessionToken = "", spectatorMode = false, spectatorFocusId = null, viewerState = null } = {}) {
   const players = Array.from(state.players.values()).map(serializePlayer);
-  const leaderboard = buildLeaderboard(players);
   const profileSession = sessionToken ? getSessionByToken(sessionToken) : state.players.get(playerId) ? getSessionByToken(state.players.get(playerId).sessionToken) : null;
   const resolvedFocusId = spectatorMode ? resolveSpectatorFocusId(players, spectatorFocusId) : null;
+  const includeResources = !viewerState || viewerState.resourcesVersion !== state.resourcesVersion || broadcastSequence % 18 === 0;
+  const includeLeaderboard = !viewerState || viewerState.leaderboardVersion !== state.leaderboardVersion || broadcastSequence % 6 === 0;
+  const includeProfile = !viewerState || !viewerState.profileSent;
+  const leaderboard = includeLeaderboard ? buildLeaderboard(players) : undefined;
 
-  return {
+  const snapshot = {
     type: "state",
     you: playerId,
     spectator: {
@@ -1922,11 +1954,7 @@ function snapshotForViewer({ playerId = null, sessionToken = "", spectatorMode =
       broadcastRate: BROADCAST_RATE
     },
     players,
-    foods: state.foods,
-    growthNodes: state.growthNodes,
-    leaderboard,
-    recentEvents: state.events.slice(-8),
-    profile: buildProfileForSession(profileSession),
+    recentEvents: broadcastSequence % 4 === 0 ? state.events.slice(-8) : undefined,
     round: {
       number: state.round.number,
       status: state.round.status,
@@ -1936,19 +1964,51 @@ function snapshotForViewer({ playerId = null, sessionToken = "", spectatorMode =
       countdownMs: Math.max(0, state.round.countdownEndsAt - Date.now())
     }
   };
+
+  if (includeResources) {
+    snapshot.foods = state.foods;
+    snapshot.growthNodes = state.growthNodes;
+    snapshot.resourcesVersion = state.resourcesVersion;
+  }
+
+  if (includeLeaderboard) {
+    snapshot.leaderboard = leaderboard;
+    snapshot.leaderboardVersion = state.leaderboardVersion;
+  }
+
+  if (includeProfile) {
+    snapshot.profile = buildProfileForSession(profileSession);
+  }
+
+  if (viewerState) {
+    if (includeResources) {
+      viewerState.resourcesVersion = state.resourcesVersion;
+    }
+    if (includeLeaderboard) {
+      viewerState.leaderboardVersion = state.leaderboardVersion;
+    }
+    if (includeProfile) {
+      viewerState.profileSent = true;
+    }
+  }
+
+  return snapshot;
 }
 
 function broadcastGameState() {
+  broadcastSequence += 1;
   for (const player of state.players.values()) {
     if (player.socket?.readyState === 1) {
-      player.socket.send(JSON.stringify(snapshotForViewer({ playerId: player.id })));
+      player.netState = player.netState || { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
+      player.socket.send(JSON.stringify(snapshotForViewer({ playerId: player.id, viewerState: player.netState })));
     }
   }
 
   for (const spectator of state.spectators.values()) {
     if (spectator.socket?.readyState === 1) {
+      spectator.netState = spectator.netState || { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
       spectator.socket.send(
-        JSON.stringify(snapshotForViewer({ sessionToken: spectator.sessionToken, spectatorMode: true }))
+        JSON.stringify(snapshotForViewer({ sessionToken: spectator.sessionToken, spectatorMode: true, viewerState: spectator.netState }))
       );
     }
   }
@@ -2180,6 +2240,7 @@ function handleJoin(request, response, payload) {
   });
 
   state.players.set(player.id, player);
+  bumpLeaderboardVersion();
   if (player.accountId) {
     incrementAccountStat(player, "totalMatches");
   }
@@ -2320,9 +2381,11 @@ const server = http.createServer(async (request, response) => {
   serveFile(normalized, response);
 });
 
-const webSocketServer = new WebSocketServer({ server });
+const webSocketServer = new WebSocketServer({ server, perMessageDeflate: false });
 
 webSocketServer.on("connection", (socket, request) => {
+  socket._socket?.setNoDelay(true);
+  socket._socket?.setKeepAlive(true, 30000);
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
   const playerId = requestUrl.searchParams.get("playerId");
   const spectatorId = requestUrl.searchParams.get("spectatorId");
@@ -2336,8 +2399,11 @@ webSocketServer.on("connection", (socket, request) => {
     }
 
     spectator.socket = socket;
+    spectator.netState = { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
     socket.send(JSON.stringify({ type: "welcome", spectatorId: spectator.id, spectating: true }));
-    socket.send(JSON.stringify(snapshotForViewer({ sessionToken: spectator.sessionToken, spectatorMode: true })));
+    socket.send(
+      JSON.stringify(snapshotForViewer({ sessionToken: spectator.sessionToken, spectatorMode: true, viewerState: spectator.netState }))
+    );
 
     socket.on("message", (rawMessage) => {
       try {
@@ -2370,8 +2436,9 @@ webSocketServer.on("connection", (socket, request) => {
   }
 
   player.socket = socket;
+  player.netState = { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
   socket.send(JSON.stringify({ type: "welcome", playerId: player.id, name: player.name }));
-  socket.send(JSON.stringify(snapshotForViewer({ playerId: player.id })));
+  socket.send(JSON.stringify(snapshotForViewer({ playerId: player.id, viewerState: player.netState })));
 
   socket.on("message", (rawMessage) => {
     try {
@@ -2411,6 +2478,7 @@ webSocketServer.on("connection", (socket, request) => {
   socket.on("close", () => {
     if (state.players.has(player.id)) {
       state.players.delete(player.id);
+      bumpLeaderboardVersion();
       pushEvent("leave", { playerId: player.id, name: player.name });
     }
   });
