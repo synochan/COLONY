@@ -1,407 +1,64 @@
 # Colony.io
 
-Colony.io is a browser-based real-time multiplayer colony game built with a server-authoritative Node.js backend and a canvas-based frontend. Players control a hive, collect spores, hatch workers, split and merge units, raid enemy colonies, unlock skins, and earn run-based card buffs inside a shared live arena.
+Colony.io is a fast-paced browser multiplayer game where each player controls a hive, grows a worker swarm, gathers resources, and battles rival colonies in a shared live arena.
 
-This README is written as a concise technical report for the system, with emphasis on features, architecture, PDC concepts, performance evidence, and design rationale.
+It blends:
 
-## 1. Project Summary
+- real-time movement
+- worker micro-management
+- run-based upgrade choices
+- competitive map control
 
-- **Project name:** `Colony.io`
-- **Type:** real-time multiplayer browser game
-- **Backend:** `Node.js` + `ws`
-- **Frontend:** vanilla `HTML`, `CSS`, `JavaScript`, `Canvas`
-- **Persistence:** JSON account store in `data/accounts.json` or `DATA_DIR/accounts.json`
-- **Deployment target:** Railway / Docker-compatible hosts
+## What The Game Includes
 
-## 2. Core Scope
+- Live multiplayer matches with up to **30 players**
+- Hive movement and worker control
+- Splitting, merging, hatching, and raiding
+- Match-based card buffs and progression
+- Account and guest play
+- Spectator mode
+- Network diagnostics for live testing
 
-The system is designed to support:
+## Tech Stack
 
-- up to **30 concurrent live players**
-- server-authoritative real-time gameplay
-- account login and guest sessions
-- admin moderation and monitoring
-- persistent progression for accounts
-- responsive gameplay across unstable network conditions
+- **Backend:** Node.js
+- **Realtime networking:** `ws` WebSockets
+- **Frontend:** HTML, CSS, JavaScript
+- **Rendering:** HTML5 Canvas
+- **Persistence:** local JSON storage or mounted volume storage
 
-## 3. System Features
-
-This section describes the main user-facing and system-facing functionality.
-
-### 3.1 Major Features
-
-| Feature | What it does | Why it matters |
-|---|---|---|
-| Real-time multiplayer arena | Multiple players share the same live map and interact at the same time | Core gameplay depends on synchronized shared state |
-| Hive and worker control | Players move the hive, direct workers, split, merge, hatch, raid, and harvest | Creates the game’s strategy and skill loop |
-| Match-based card buffs | Players choose 1 of 3 cards at key run levels | Adds replayability and run-specific strategy |
-| Account system | Registered users keep XP, levels, and skins | Supports progression and retention |
-| Guest mode | Fast entry without account creation | Reduces friction for new players |
-| Spectator mode | Users can watch ongoing matches | Useful for dead players, observers, and testing |
-| Admin controls | Admin can monitor players, moderate sessions, and inspect server state | Critical for testing, balancing, and live operations |
-| Network diagnostics | Ping, jitter, snapshot rate, and packet indicators are visible | Helps debug live performance and verify smoothness |
-| Persistent storage | Accounts are saved to disk or a mounted Railway volume | Prevents progress loss across restarts |
-
-### 3.2 Feature Visuals
-
-Use the following visuals in the final submission or documentation set:
-
-1. **Main game screen**
-   - Show the arena, leaderboard, worker swarm, and bottom-right network strip.
-
-2. **How To Play panel**
-   - Show the compact bottom-left control guide visible during gameplay.
-
-3. **Card selection overlay**
-   - Show the 1-of-3 card reward choice during a run.
-
-4. **Standalone admin dashboard page**
-   - Show player list, moderation controls, and server/network metrics.
-
-5. **In-game admin panel**
-   - Show the lighter admin overlay available while playing as admin.
-
-Example markdown image slots:
-
-```md
-![Main gameplay screen](docs/screenshots/main-gameplay.png)
-![Card selection overlay](docs/screenshots/card-selection.png)
-![Admin dashboard page](docs/screenshots/admin-dashboard.png)
-```
-
-### 3.3 Short Feature Explanations
-
-#### Real-time Arena
-Players join the same map and compete for score by harvesting food, eating growth nodes, building workers, and collapsing enemy hives.
-
-#### Worker Command System
-Workers act as the player’s distributed units. They can gather, raid, grow, split, and merge depending on player inputs and current mode.
-
-#### Card Buff System
-At milestone run levels, the player chooses **1 card from 3 options**. The chosen buff applies to the current run only, keeping matches competitive while still giving progression moments.
-
-#### Admin Dashboard
-The system includes a standalone `/admin` page and in-game admin controls. These support moderation, testing, live monitoring, and server-state inspection.
-
-#### Network Smoothness Tooling
-The client exposes network indicators such as ping, jitter, snapshot rate, and packet pressure so performance issues can be observed during gameplay rather than guessed.
-
-## 4. Architecture & Design
-
-### 4.1 System Structure
-
-```mermaid
-flowchart LR
-    A[Browser Client 1] -->|WebSocket input| S[Node.js Game Server]
-    B[Browser Client 2] -->|WebSocket input| S
-    C[Spectator Client] -->|WebSocket input / ping| S
-    D[Admin Dashboard] -->|HTTP admin APIs| S
-
-    S -->|State snapshots| A
-    S -->|State snapshots| B
-    S -->|State snapshots| C
-    S -->|JSON dashboard data| D
-
-    S --> F[(accounts.json / DATA_DIR)]
-```
-
-### 4.2 Internal Server Design
-
-```mermaid
-flowchart TD
-    I[Client Input] --> P[Input Parsing]
-    P --> G[Game Update Loop]
-    G --> H[Hive Logic]
-    G --> W[Worker Logic]
-    G --> R[Resource Updates]
-    G --> L[Leaderboard / Round Logic]
-    H --> B[Broadcast Snapshot Builder]
-    W --> B
-    R --> B
-    L --> B
-    B --> O[Per-viewer Snapshot Output]
-```
-
-### 4.3 Communication Flow
-
-1. The client sends movement and command input to the server through WebSockets.
-2. The server validates and stores the latest input for that player.
-3. A fixed-timestep game loop updates authoritative world state.
-4. A separate broadcast loop packages snapshots for players and spectators.
-5. The client interpolates received state to keep rendering smooth.
-6. Admin dashboards use authenticated HTTP endpoints to fetch control and monitoring data.
-
-### 4.4 Data Movement
-
-- **Client → Server**
-  - player input
-  - ping packets
-  - auth and admin API requests
-
-- **Server → Client**
-  - world snapshots
-  - acknowledgements
-  - pong timing replies
-  - admin dashboard payloads
-
-- **Server → Storage**
-  - account creation
-  - progression updates
-  - bans and moderation state
-
-## 5. PDC Concepts Applied
-
-This system uses multiple Parallel and Distributed Computing concepts in practical ways.
-
-### 5.1 Client-Server Model
-
-**Where applied:** Entire game architecture.
-
-**Role in the system:**  
-The browser acts as a client and the Node.js process acts as the central authority. All important game logic runs on the server, and clients receive synchronized state.
-
-**Why appropriate:**  
-This avoids trust issues, reduces cheating opportunities, and keeps every player in the same canonical world.
-
-### 5.2 Distributed Participants
-
-**Where applied:** Multiple players, spectators, and admins connected from different browsers.
-
-**Role in the system:**  
-Each client is a distributed endpoint generating input and receiving updates, while the server coordinates a shared global game state.
-
-**Why appropriate:**  
-The game must support many simultaneous participants in different sessions and roles.
-
-### 5.3 Event-Driven Concurrency
-
-**Where applied:** WebSocket handling and HTTP request handling.
-
-**Role in the system:**  
-Node.js processes many active sockets and requests concurrently using asynchronous I/O rather than spawning a thread per client.
-
-**Why appropriate:**  
-This is efficient for a network-heavy multiplayer game where most waiting time is I/O-bound.
-
-### 5.4 Fixed-Timestep Simulation
-
-**Where applied:** Game-state update loop.
-
-**Role in the system:**  
-The server advances simulation at a stable tick rate instead of relying on irregular client timing.
-
-**Why appropriate:**  
-It keeps gameplay more deterministic and easier to balance.
-
-### 5.5 Snapshot Broadcasting
-
-**Where applied:** Broadcast loop from server to all viewers.
-
-**Role in the system:**  
-The server periodically distributes a consistent view of the world to clients.
-
-**Why appropriate:**  
-This supports synchronized multiplayer while allowing the client to smooth rendering visually.
-
-### 5.6 Per-Viewer Culling and Partial State Distribution
-
-**Where applied:** Snapshot generation.
-
-**Role in the system:**  
-Each viewer receives only nearby resources and nearby players/workers when possible, instead of the entire world every update.
-
-**Why appropriate:**  
-This reduces network load, lowers serialization cost, and improves scalability for a 30-player room.
-
-### 5.7 Heartbeat-Based Fault Detection
-
-**Where applied:** WebSocket connection management.
-
-**Role in the system:**  
-The server periodically pings sockets and terminates dead connections that no longer respond.
-
-**Why appropriate:**  
-It prevents stale broken connections from consuming memory and harming smooth live play.
-
-### 5.8 Backpressure Awareness
-
-**Where applied:** WebSocket send path and client input path.
-
-**Role in the system:**  
-The system checks buffered send pressure before continuing heavy traffic to a slow connection.
-
-**Why appropriate:**  
-It reduces queue buildup, lag spikes, and memory pressure under unstable network conditions.
-
-## 6. Performance Evidence
-
-This section presents currently verifiable runtime and implementation evidence from the system. It intentionally avoids inventing benchmark numbers that were not measured.
-
-### 6.1 Measurable Runtime Configuration
-
-| Metric | Current value | Source |
-|---|---|---|
-| Max concurrent players | `30` | `server.js` |
-| Server simulation tick rate | `30 Hz` | `server.js` |
-| Snapshot broadcast rate | `24 Hz` | `server.js` |
-| Score target per round | `20,000` | `server.js` |
-| Input send interval | `33 ms` base with dedupe/heartbeat rules | `public/client.js` |
-| WebSocket heartbeat interval | `25,000 ms` | `server.js` |
-
-### 6.2 Performance-Oriented Optimizations Present
-
-| Optimization | Evidence in system | Expected benefit |
-|---|---|---|
-| Server-authoritative simulation | Game logic runs on server loop | Consistent world state |
-| Client interpolation | Render snapshot is smoothed between updates | Less visible jitter |
-| Input deduplication | Client avoids sending unchanged input too often | Lower bandwidth and less input spam |
-| Snapshot culling | Per-viewer nearby state only | Smaller payloads |
-| Resource partial updates | Resources are sent based on visibility and movement | Less wasted traffic |
-| Backpressure checks | Buffered socket thresholds are enforced | Better stability under weak connections |
-| WebSocket heartbeat | Dead sockets are terminated | Less ghost load |
-| Optional `bufferutil` addon | Installed as optional dependency | Faster WebSocket frame processing |
-
-### 6.3 Evidence Available Inside the System
-
-The running game already exposes live indicators that can be used during evaluation:
-
-- **Ping**
-- **Jitter**
-- **Snapshot rate**
-- **Packet In**
-- **Packet Out**
-- **Online player count**
-
-The standalone admin dashboard also exposes:
-
-- online players
-- spectator count
-- active sessions
-- memory usage (`heap`, `rss`)
-- food and growth-node counts
-- leaderboard version
-- uptime
-
-### 6.4 Suggested Comparison Table for Final Submission
-
-Use the following template during testing:
-
-| Scenario | Ping | Jitter | Snap Rate | Packet Out | Notes |
-|---|---:|---:|---:|---:|---|
-| Idle, 1 player | fill after test | fill after test | fill after test | fill after test | baseline |
-| 5 players active | fill after test | fill after test | fill after test | fill after test | moderate load |
-| 15 players active | fill after test | fill after test | fill after test | fill after test | heavy match |
-| 30 players stress case | fill after test | fill after test | fill after test | fill after test | max-room scenario |
-
-### 6.5 Suggested Graphs
-
-For the final report, include:
-
-1. **Ping vs. player count**
-2. **Snapshot rate vs. player count**
-3. **Server memory usage over time**
-4. **Packet Out pressure before and after network optimization**
-
-## 7. Design Rationale
-
-### 7.1 Why This System Was Selected
-
-This system was selected because a real-time multiplayer game is a strong and practical application of distributed computing. It naturally requires:
-
-- multiple independent clients
-- continuous network communication
-- synchronized shared state
-- scalable coordination under load
-
-That makes it a good fit for demonstrating both gameplay engineering and PDC concepts in a visible, testable way.
-
-### 7.2 Why the Server-Authoritative Model Was Chosen
-
-The server-authoritative approach was chosen because it is the safest and most consistent way to manage a competitive live game.
-
-It ensures that:
-
-- the server decides the real outcome of movement and combat
-- clients cannot easily fake score or damage
-- all players observe the same authoritative world
-
-### 7.3 Why Node.js and WebSockets Were Chosen
-
-Node.js with WebSockets was chosen because the problem is dominated by many small, frequent network events rather than CPU-heavy batch computation.
-
-This combination works well for:
-
-- many concurrent socket connections
-- fast event-driven I/O
-- low-overhead real-time communication
-- simple deployment on Railway or Docker
-
-### 7.4 Why the Frontend Was Kept Lightweight
-
-The frontend uses plain JavaScript and Canvas instead of a heavier UI framework because the game depends more on:
-
-- fast rendering
-- direct control over the frame loop
-- low browser overhead
-
-This keeps the runtime smaller and the rendering path easier to optimize.
-
-### 7.5 Why Visibility Culling and Partial Snapshots Were Necessary
-
-Sending the entire world to every client on every update does not scale cleanly as more players and workers become active.
-
-Per-viewer culling was chosen because it:
-
-- reduces bandwidth
-- lowers serialization work
-- improves smoothness for all participants
-- fits naturally with a map-based game where distant entities are not immediately relevant
-
-### 7.6 Why Admin Tooling Was Added
-
-The admin dashboard was added because live multiplayer systems need operational tooling, not just gameplay features.
-
-It helps with:
-
-- testing balance changes
-- monitoring live sessions
-- removing abusive or broken sessions
-- observing server health and network behavior
-
-### 7.7 Overall Design Philosophy
-
-The overall design favors:
-
-- simple deployment
-- strong server control
-- practical scalability
-- observable performance
-- readable implementation over unnecessary complexity
-
-In short, the system was built to be playable, testable, and explainable.
-
-## 8. Local Run Instructions
+## Run Locally
 
 ```powershell
 npm.cmd install
 npm.cmd start
 ```
 
-Open:
+Then open:
 
-- `http://localhost:3000` for the game
-- `http://localhost:3000/admin` for the standalone admin dashboard
+- `http://localhost:3000`
 
-## 9. Deployment Notes
+## Core Controls
 
-- `PORT` is environment-driven
-- `GET /healthz` is available
-- `DATA_DIR` supports mounted persistent storage
-- Railway is the recommended first deployment target
+- `WASD` move the hive
+- `Shift` boost movement
+- `Space` hatch a worker
+- `Q` merge workers
+- `F` split a large worker
+- `Left Click` direct workers into raid mode
 
-For Railway persistence:
+## Project Notes
 
-1. mount a volume at `/data`
-2. set `DATA_DIR=/data`
+- The game is server-authoritative
+- The system is tuned for persistent WebSocket connections
+- The recommended deployment target is Railway or another always-on host
 
-Without that, account progress is not guaranteed to survive redeploys.
+## Deployment
+
+This project supports:
+
+- Docker-based deployment
+- Railway-style health checks through `/healthz`
+- persistent data via `DATA_DIR`
+
+If you want the full system write-up covering architecture, PDC concepts, performance evidence, and design rationale, see [Details.md](./Details.md).

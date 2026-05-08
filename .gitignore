@@ -5,3 +5,12 @@ yarn-debug.log*
 yarn-error.log*
 .DS_Store
 Thumbs.db
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.crt
+*.secret
+*.local
+coverage/

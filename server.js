@@ -10,8 +10,9 @@ const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, "data");
 const ACCOUNTS_FILE = path.join(DATA_DIR, "accounts.json");
-const DEFAULT_ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
-const DEFAULT_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Admin12345!";
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+const ADMIN_SEED_ENABLED = Boolean(ADMIN_USERNAME && ADMIN_PASSWORD);
 let isShuttingDown = false;
 
 const MAP_WIDTH = 8200;
@@ -771,9 +772,29 @@ function findAccountByUsername(username) {
   return accountStore.accounts.find((account) => account.username.toLowerCase() === lowered) || null;
 }
 
+function isStrongAdminPassword(password) {
+  return (
+    typeof password === "string" &&
+    password.length >= 12 &&
+    /[a-z]/.test(password) &&
+    /[A-Z]/.test(password) &&
+    /\d/.test(password)
+  );
+}
+
 function ensureAdminAccount() {
-  const username = normalizeUsername(DEFAULT_ADMIN_USERNAME);
-  if (!username || DEFAULT_ADMIN_PASSWORD.length < 4) {
+  if (!ADMIN_SEED_ENABLED) {
+    return;
+  }
+
+  const username = normalizeUsername(ADMIN_USERNAME);
+  if (!username) {
+    console.warn("[admin] ADMIN_USERNAME is set but invalid. Admin seeding skipped.");
+    return;
+  }
+
+  if (!isStrongAdminPassword(ADMIN_PASSWORD)) {
+    console.warn("[admin] ADMIN_PASSWORD must be at least 12 chars and include upper, lower, and number. Admin seeding skipped.");
     return;
   }
 
@@ -784,7 +805,7 @@ function ensureAdminAccount() {
       id: createId("acct"),
       username,
       salt,
-      passwordHash: hashPassword(DEFAULT_ADMIN_PASSWORD, salt),
+      passwordHash: hashPassword(ADMIN_PASSWORD, salt),
       xp: xpFloorForLevel(MAX_LEVEL),
       level: MAX_LEVEL,
       ownedSkins: Object.keys(SKIN_LIBRARY),
@@ -796,7 +817,7 @@ function ensureAdminAccount() {
       lastSeenAt: Date.now()
     };
     accountStore.accounts.push(account);
-    console.log(`[admin] Created admin account "${username}". Change ADMIN_PASSWORD in production if needed.`);
+    console.log(`[admin] Created admin account "${username}" from environment configuration.`);
   } else {
     account.role = "admin";
   }
@@ -2498,7 +2519,7 @@ function handleRegister(request, response, payload) {
     return;
   }
 
-  if (username.toLowerCase() === normalizeUsername(DEFAULT_ADMIN_USERNAME).toLowerCase()) {
+  if (ADMIN_SEED_ENABLED && username.toLowerCase() === normalizeUsername(ADMIN_USERNAME).toLowerCase()) {
     sendJson(response, 403, { error: "That username is reserved." });
     return;
   }
