@@ -69,6 +69,9 @@ const WORKER_HATCH_SPAWN_DISTANCE = 84;
 const WORKER_HATCH_BOUNCE_SPEED = 148;
 const WORKER_SPLIT_BOUNCE_SPEED = 176;
 const WORKER_BOOST_SPEED_BONUS_PCT = 0.12;
+const WORKER_SOLIDITY_PADDING = 3;
+const WORKER_SOLIDITY_STRENGTH = 0.72;
+const WORKER_SOLIDITY_ITERATIONS = 3;
 const WORKER_PICKOFF_SCORE_REWARD = 12;
 const COLONY_KILL_SCORE_REWARD = 58;
 const HIVE_SCORE_STEAL_PCT = 0.42;
@@ -2366,6 +2369,48 @@ function clampWorkerToCommandRange(player, worker) {
   worker.y = clamp(worker.y, worker.radius + 2, currentMapHeight() - worker.radius - 2);
 }
 
+function resolveWorkerSolidity(player, deltaSeconds) {
+  if (player.workers.length < 2) {
+    return;
+  }
+
+  const maxCorrection = Math.max(2.2, 150 * deltaSeconds);
+  for (let iteration = 0; iteration < WORKER_SOLIDITY_ITERATIONS; iteration += 1) {
+    for (let leftIndex = 0; leftIndex < player.workers.length - 1; leftIndex += 1) {
+      const first = player.workers[leftIndex];
+      for (let rightIndex = leftIndex + 1; rightIndex < player.workers.length; rightIndex += 1) {
+        const second = player.workers[rightIndex];
+        const dx = second.x - first.x;
+        const dy = second.y - first.y;
+        const currentDistance = Math.hypot(dx, dy);
+        const minimumDistance = first.radius + second.radius + WORKER_SOLIDITY_PADDING;
+
+        if (currentDistance >= minimumDistance) {
+          continue;
+        }
+
+        const fallbackAngle = ((leftIndex + 1) * 2.399963 + (rightIndex + 1) * 0.917) % (Math.PI * 2);
+        const direction = currentDistance > 0.001
+          ? { x: dx / currentDistance, y: dy / currentDistance }
+          : { x: Math.cos(fallbackAngle), y: Math.sin(fallbackAngle) };
+        const overlap = minimumDistance - Math.max(currentDistance, 0.001);
+        const correction = Math.min(maxCorrection, overlap * WORKER_SOLIDITY_STRENGTH);
+        const totalRadius = Math.max(1, first.radius + second.radius);
+        const firstShare = second.radius / totalRadius;
+        const secondShare = first.radius / totalRadius;
+
+        first.x -= direction.x * correction * firstShare;
+        first.y -= direction.y * correction * firstShare;
+        second.x += direction.x * correction * secondShare;
+        second.y += direction.y * correction * secondShare;
+
+        clampWorkerToCommandRange(player, first);
+        clampWorkerToCommandRange(player, second);
+      }
+    }
+  }
+}
+
 function findClosestCommandScopedFood(player, origin, radius) {
   let bestFood = null;
   let bestDistance = Infinity;
@@ -2882,6 +2927,8 @@ function updateWorkers(player, deltaSeconds) {
       handleWorkerHarvest(player, worker, index, deltaSeconds);
     }
   }
+
+  resolveWorkerSolidity(player, deltaSeconds);
 }
 
 function updateGame() {
