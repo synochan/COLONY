@@ -111,7 +111,7 @@ async function main() {
       token: register.authToken,
       csrfToken: authMe.csrfToken,
       body: {
-        roomMode: "matchmaking",
+        roomMode: "public",
         roomRegion: "singapore"
       }
     });

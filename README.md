@@ -25,7 +25,7 @@ It blends:
 - **Realtime networking:** `ws` WebSockets
 - **Frontend:** HTML, CSS, JavaScript
 - **Rendering:** HTML5 Canvas
-- **Persistence:** local JSON storage or mounted volume storage
+- **Persistence:** PostgreSQL on Railway through `DATABASE_URL`, with local JSON fallback
 
 ## Run Locally
 
@@ -59,6 +59,9 @@ This project supports:
 
 - Docker-based deployment
 - Railway-style health checks through `/healthz`
-- persistent data via `DATA_DIR`
+- PostgreSQL persistence through Railway Postgres and `DATABASE_URL`
+- local fallback persistence through `DATA_DIR`
+
+For Railway, add a PostgreSQL database to the project and expose `DATABASE_URL` to the game service. The server creates the required account and ban tables automatically on startup; the reference schema is in [database/schema.sql](./database/schema.sql).
 
 If you want the full system write-up covering architecture, PDC concepts, performance evidence, and design rationale, see [Details.md](./Details.md).

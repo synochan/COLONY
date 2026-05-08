@@ -8,7 +8,7 @@ COLONY is a real-time multiplayer browser game built with:
 - `ws` for WebSocket networking
 - vanilla `HTML`, `CSS`, and `JavaScript` on the client
 - `Canvas` rendering for the game view
-- JSON file persistence for account storage
+- PostgreSQL account storage on Railway through `DATABASE_URL`, with JSON fallback for local development
 
 The system is split into three main layers:
 
@@ -25,7 +25,7 @@ The system is split into three main layers:
 
 ### 1. Account persistence is not pushed to Git
 
-Live account data is stored in `data/accounts.json`, and that file is intentionally ignored by Git. This prevents publishing real account records, salts, hashes, bans, and progression data.
+Local development account data is stored in `data/accounts.json`, and that file is intentionally ignored by Git. Railway deployments should use PostgreSQL by setting `DATABASE_URL`, which makes the server create and use the `colony_accounts` and `colony_banned_guests` tables automatically.
 
 ### 2. Admin access is environment-based
 
@@ -209,14 +209,14 @@ Each room keeps its own:
 - leaderboard/resource versions
 - custom gameplay config
 
-This is what makes custom rooms and matchmaking possible without mixing two matches together.
+This is what makes public arenas and custom rooms possible without mixing two matches together.
 
-### Matchmaking and custom rooms
+### Public arena and custom rooms
 
 The current server supports two room modes:
 
-1. `matchmaking`
-   Players are placed into a regional matchmaking room with capacity checks.
+1. `public`
+   The normal Play button joins the public arena automatically. A new public lobby is created only when the active one is full.
 2. `custom`
    Players can create or join a room with custom settings such as:
    - player cap
@@ -231,7 +231,7 @@ The current server supports two room modes:
 
 ### Important multi-region note
 
-The code now understands room regions and region-aware matchmaking preferences, but true low-latency multi-region hosting still requires multiple live deployments.
+The code now understands room regions and region-aware room preferences, but true low-latency multi-region hosting still requires multiple live deployments.
 
 In practice that means:
 
@@ -444,10 +444,10 @@ To reduce real ping, deploy the server as close as possible to the player base. 
 
 The system is much safer and smoother now, but some constraints still exist:
 
-- account storage is still JSON-file based, not a full database
+- local fallback account storage is JSON-file based when `DATABASE_URL` is not set
 - in-memory rate limiting resets on server restart
 - WebSocket multiplayer still depends on host region for true latency
-- very large scale would eventually benefit from PostgreSQL/Redis and a more formal auth/session store
+- very large scale would eventually benefit from Redis and a more formal auth/session store
 
 ---
 
@@ -456,7 +456,7 @@ The system is much safer and smoother now, but some constraints still exist:
 If you want to keep hardening the project further, the highest-value next upgrades would be:
 
 1. Extend the current persistence abstraction to support live migrations and larger account volumes more efficiently than full-state rewrites.
-2. Add room orchestration for true matchmaking, custom-room settings, and multi-region arena selection.
+2. Add a routing layer that directs players to separate deployed regions for true multi-region hosting.
 3. Add automated gameplay simulation tests around combat, split/merge, and respawn behavior.
 4. Add moderation history views on top of the audit log stream.
 5. Add room-level balancing presets for food density, damage, score goal, and growth tuning.
