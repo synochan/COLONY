@@ -119,7 +119,10 @@ function renderDashboard() {
             ? '<div class="admin-inline-note">Protected admin session.</div>'
             : `
                 <div class="admin-actions">
+                  <button type="button" class="admin-action" data-admin-action="heal_player" data-player-id="${escapeHtml(entry.id)}">Heal</button>
+                  <button type="button" class="admin-action" data-admin-action="grant_score_player" data-player-id="${escapeHtml(entry.id)}" data-amount="2000">+2000 Score</button>
                   <button type="button" class="admin-action" data-admin-action="respawn_player" data-player-id="${escapeHtml(entry.id)}">Respawn</button>
+                  <button type="button" class="admin-action warn" data-admin-action="freeze_player" data-player-id="${escapeHtml(entry.id)}">${entry.frozen ? "Unfreeze" : "Freeze"}</button>
                   <button type="button" class="admin-action warn" data-admin-action="kill_player" data-player-id="${escapeHtml(entry.id)}">Collapse</button>
                   <button type="button" class="admin-action warn" data-admin-action="kick_player" data-player-id="${escapeHtml(entry.id)}">Kick</button>
                   <button type="button" class="admin-action danger" data-admin-action="ban_player" data-player-id="${escapeHtml(entry.id)}">Ban</button>
@@ -132,7 +135,7 @@ function renderDashboard() {
                 ${badge}
               </div>
               <div class="admin-row-meta">
-                <span>${entry.alive ? "Alive" : "Down"} | Score ${formatCompactNumber(entry.score)} | Run Lv ${escapeHtml(entry.level)}</span>
+                <span>${entry.alive ? "Alive" : "Down"}${entry.frozen ? " | Frozen" : ""} | Score ${formatCompactNumber(entry.score)} | Run Lv ${escapeHtml(entry.level)}</span>
                 <span>Workers ${escapeHtml(entry.workers)} | HP ${escapeHtml(entry.health)}/${escapeHtml(entry.healthMax)}</span>
               </div>
               <div class="admin-row-meta">
@@ -150,9 +153,17 @@ function renderDashboard() {
     ? accounts
         .map((account) => {
           const badge = account.role === "admin" ? '<span class="admin-badge">Admin</span>' : "";
-          const unban = account.banned
-            ? `<div class="admin-actions"><button type="button" class="admin-action" data-admin-action="unban_account" data-account-id="${escapeHtml(account.id)}">Unban Account</button></div>`
-            : "";
+          const actions =
+            account.role === "admin"
+              ? '<div class="admin-inline-note">Protected admin account.</div>'
+              : account.banned
+                ? `<div class="admin-actions"><button type="button" class="admin-action" data-admin-action="unban_account" data-account-id="${escapeHtml(account.id)}">Unban Account</button></div>`
+                : `
+                    <div class="admin-actions">
+                      <button type="button" class="admin-action warn" data-admin-action="kick_account_sessions" data-account-id="${escapeHtml(account.id)}">Kick Sessions</button>
+                      <button type="button" class="admin-action danger" data-admin-action="ban_account" data-account-id="${escapeHtml(account.id)}">Ban Account</button>
+                    </div>
+                  `;
           return `
             <div class="admin-row">
               <div class="admin-row-head">
@@ -167,7 +178,7 @@ function renderDashboard() {
                 <span>${account.banned ? `Banned${account.banReason ? `: ${escapeHtml(account.banReason)}` : ""}` : "Active account"}</span>
                 <span>Skins ${escapeHtml(account.ownedSkins)}</span>
               </div>
-              ${unban}
+              ${actions}
             </div>
           `;
         })
@@ -191,6 +202,27 @@ function renderDashboard() {
         )
         .join("")
     : '<div class="admin-empty"><strong>No banned guests.</strong></div>';
+
+  const activeGuestNames = Array.from(
+    new Set(players.filter((entry) => entry.mode === "guest").map((entry) => entry.name).filter(Boolean))
+  ).filter((guestName) => !bannedGuests.includes(guestName.toLowerCase()));
+  if (activeGuestNames.length) {
+    pageAdminGuestsDashboard.innerHTML += activeGuestNames
+      .map(
+        (guestName) => `
+          <div class="admin-row">
+            <div class="admin-row-head">
+              <strong>${escapeHtml(guestName)}</strong>
+            </div>
+            <div class="admin-actions">
+              <button type="button" class="admin-action warn" data-admin-action="kick_guest_sessions" data-guest-name="${escapeHtml(guestName)}">Kick Sessions</button>
+              <button type="button" class="admin-action danger" data-admin-action="ban_guest_name" data-guest-name="${escapeHtml(guestName)}">Ban Guest</button>
+            </div>
+          </div>
+        `
+      )
+      .join("");
+  }
 }
 
 async function loadProfile() {
@@ -284,6 +316,9 @@ adminPageDashboard?.addEventListener("click", (event) => {
   }
   if (button.dataset.guestName) {
     extra.targetGuestName = button.dataset.guestName;
+  }
+  if (button.dataset.amount) {
+    extra.amount = Number(button.dataset.amount);
   }
   runAdminAction(button.dataset.adminAction, extra);
 });

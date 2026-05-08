@@ -1051,7 +1051,9 @@ function adminDashboardPayload() {
         id: player.id,
         name: player.name,
         accountId: player.accountId || null,
+        mode: player.accountId ? "account" : "guest",
         isAdmin: Boolean(player.isAdmin),
+        frozen: Boolean(player.adminFrozen),
         alive: player.alive,
         score: Math.round(player.score),
         level: player.matchLevel,
@@ -1959,6 +1961,11 @@ function handleWorkerCombat(player, worker, deltaSeconds) {
   moveEntity(worker, targetPosition.x, targetPosition.y, workerSpeed(worker, player), deltaSeconds, worker.radius + 2);
   clampWorkerToCommandRange(player, worker);
 
+  if (tryConsumeNearbyGrowthNode(player, worker)) {
+    return;
+  }
+  tryConsumeNearbyFood(player, worker);
+
   if (target.kind === "worker") {
     if (isAdminGodMode(target.player)) {
       target.worker.health = target.worker.healthMax;
@@ -2003,6 +2010,16 @@ function updatePlayer(player, deltaSeconds) {
     if (player.respawnTimer === 0) {
       resetPlayer(player);
     }
+    return;
+  }
+
+  if (player.adminFrozen) {
+    player.isBoosting = false;
+    player.isAttacking = false;
+    player.commandPoint = { x: player.x, y: player.y };
+    player.knockbackX *= 0.48;
+    player.knockbackY *= 0.48;
+    player.health = clamp(player.health + playerHealthRegen(player) * deltaSeconds, 0, player.healthMax);
     return;
   }
 
@@ -2547,6 +2564,7 @@ function handleAdminAction(request, response, payload) {
   const targetPlayerId = String(payload.targetPlayerId || "");
   const targetAccountId = String(payload.targetAccountId || "");
   const targetGuestName = String(payload.targetGuestName || "");
+  const requestedAmount = Number(payload.amount) || 0;
 
   const findTargetPlayer = () => Array.from(state.players.values()).find((entry) => entry.id === targetPlayerId);
   const kickPlayer = (targetPlayer, reason = "Kicked by admin") => {
@@ -2634,6 +2652,56 @@ function handleAdminAction(request, response, payload) {
     return false;
   };
 
+  const kickSessionsForAccount = (accountId) => {
+    const account = getAccountById(accountId);
+    if (!account || isAdminAccount(account)) {
+      return false;
+    }
+
+    let changed = false;
+    for (const [token, session] of sessions.entries()) {
+      if (session.accountId === account.id) {
+        sessions.delete(token);
+        changed = true;
+      }
+    }
+    for (const targetPlayer of Array.from(state.players.values())) {
+      if (targetPlayer.accountId === account.id) {
+        kickPlayer(targetPlayer, "Account sessions cleared by admin");
+        changed = true;
+      }
+    }
+    if (changed) {
+      pushEvent("admin_kick_account", { admin: adminActorName, target: account.username });
+    }
+    return changed;
+  };
+
+  const kickSessionsForGuest = (guestName) => {
+    const normalized = normalizeGuestName(guestName);
+    if (!normalized) {
+      return false;
+    }
+
+    let changed = false;
+    for (const [token, session] of sessions.entries()) {
+      if (session.mode === "guest" && normalizeGuestName(session.guestName) === normalized) {
+        sessions.delete(token);
+        changed = true;
+      }
+    }
+    for (const targetPlayer of Array.from(state.players.values())) {
+      if (!targetPlayer.accountId && normalizeGuestName(targetPlayer.name) === normalized) {
+        kickPlayer(targetPlayer, "Guest sessions cleared by admin");
+        changed = true;
+      }
+    }
+    if (changed) {
+      pushEvent("admin_kick_guest", { admin: adminActorName, target: normalized });
+    }
+    return changed;
+  };
+
   if (action === "toggle_god_mode") {
     const liveAdminPlayer = requireLiveAdminPlayer();
     if (!liveAdminPlayer) {
@@ -2685,6 +2753,50 @@ function handleAdminAction(request, response, payload) {
       sendJson(response, 400, { error: "Unable to kick that player." });
       return;
     }
+  } else if (action === "freeze_player") {
+    const targetPlayer = findTargetPlayer();
+    if (!targetPlayer || targetPlayer.isAdmin) {
+      sendJson(response, 400, { error: "Unable to freeze that player." });
+      return;
+    }
+    targetPlayer.adminFrozen = !targetPlayer.adminFrozen;
+    if (targetPlayer.adminFrozen) {
+      targetPlayer.isAttacking = false;
+      targetPlayer.input = {
+        ...targetPlayer.input,
+        x: 0,
+        y: 0,
+        boost: false,
+        hatch: false,
+        merge: false,
+        split: false,
+        attack: false,
+        pointerX: targetPlayer.x,
+        pointerY: targetPlayer.y
+      };
+    }
+    pushEvent("admin_freeze", { admin: adminActorName, target: targetPlayer.name, frozen: targetPlayer.adminFrozen });
+  } else if (action === "heal_player") {
+    const targetPlayer = findTargetPlayer();
+    if (!targetPlayer) {
+      sendJson(response, 404, { error: "Player not found." });
+      return;
+    }
+    refreshPlayerDerivedStats(targetPlayer);
+    targetPlayer.health = targetPlayer.healthMax;
+    for (const worker of targetPlayer.workers) {
+      worker.health = worker.healthMax;
+    }
+    pushEvent("admin_heal", { admin: adminActorName, target: targetPlayer.name });
+  } else if (action === "grant_score_player") {
+    const targetPlayer = findTargetPlayer();
+    if (!targetPlayer) {
+      sendJson(response, 404, { error: "Player not found." });
+      return;
+    }
+    const amount = clamp(requestedAmount || 2000, 100, 10000);
+    grantScore(targetPlayer, amount);
+    pushEvent("admin_score", { admin: adminActorName, target: targetPlayer.name, amount });
   } else if (action === "ban_player") {
     const targetPlayer = findTargetPlayer();
     if (!targetPlayer) {
@@ -2698,6 +2810,26 @@ function handleAdminAction(request, response, payload) {
       }
     } else if (!banGuestByName(targetPlayer.name)) {
       sendJson(response, 400, { error: "Unable to ban that guest." });
+      return;
+    }
+  } else if (action === "ban_account") {
+    if (!banAccountById(targetAccountId, "Banned by admin")) {
+      sendJson(response, 400, { error: "Unable to ban that account." });
+      return;
+    }
+  } else if (action === "ban_guest_name") {
+    if (!banGuestByName(targetGuestName)) {
+      sendJson(response, 400, { error: "Unable to ban that guest profile." });
+      return;
+    }
+  } else if (action === "kick_account_sessions") {
+    if (!kickSessionsForAccount(targetAccountId)) {
+      sendJson(response, 400, { error: "Unable to kick that account's sessions." });
+      return;
+    }
+  } else if (action === "kick_guest_sessions") {
+    if (!kickSessionsForGuest(targetGuestName)) {
+      sendJson(response, 400, { error: "Unable to kick that guest's sessions." });
       return;
     }
   } else if (action === "unban_account") {
