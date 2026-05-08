@@ -104,11 +104,16 @@ async function main() {
       token: register.authToken
     });
 
+    await request("/rooms");
+
     const join = await request("/join", {
       method: "POST",
       token: register.authToken,
       csrfToken: authMe.csrfToken,
-      body: {}
+      body: {
+        roomMode: "matchmaking",
+        roomRegion: "singapore"
+      }
     });
 
     const playerWs = await connectWebSocket(`${WS_HOST}?playerId=${encodeURIComponent(join.playerId)}`);
@@ -118,7 +123,17 @@ async function main() {
       method: "POST",
       token: register.authToken,
       csrfToken: authMe.csrfToken,
-      body: {}
+      body: {
+        roomMode: "custom",
+        roomRegion: "singapore",
+        roomName: "Smoke Custom",
+        roomConfig: {
+          maxPlayers: 12,
+          foodTarget: 320,
+          growthNodeTarget: 16,
+          roundScoreTarget: 9000
+        }
+      }
     });
 
     const spectatorWs = await connectWebSocket(`${WS_HOST}?spectatorId=${encodeURIComponent(spectate.spectatorId)}`);

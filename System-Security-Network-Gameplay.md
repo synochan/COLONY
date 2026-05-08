@@ -195,6 +195,59 @@ This controls:
 - growth
 - round-state transitions
 
+### Room architecture
+
+The server now supports room-scoped arena state instead of assuming one universal global match.
+
+Each room keeps its own:
+
+- players
+- spectators
+- foods
+- growth nodes
+- round state
+- leaderboard/resource versions
+- custom gameplay config
+
+This is what makes custom rooms and matchmaking possible without mixing two matches together.
+
+### Matchmaking and custom rooms
+
+The current server supports two room modes:
+
+1. `matchmaking`
+   Players are placed into a regional matchmaking room with capacity checks.
+2. `custom`
+   Players can create or join a room with custom settings such as:
+   - player cap
+   - food target
+   - growth node target
+   - score goal
+   - map size
+   - food value multiplier
+   - growth value multiplier
+   - hive damage multiplier
+   - worker damage multiplier
+
+### Important multi-region note
+
+The code now understands room regions and region-aware matchmaking preferences, but true low-latency multi-region hosting still requires multiple live deployments.
+
+In practice that means:
+
+- one deployment in Singapore
+- another in Tokyo
+- another in Europe or the US
+- a router, DNS layer, or lobby service that sends players to the nearest deployment
+
+So the current implementation is:
+
+- region-aware in code
+- multi-room in one server
+- deployment-ready for multi-region
+
+But it is not magic cross-continent low-ping hosting from a single Node process.
+
 ### Broadcast layer
 
 The server broadcasts state separately from the simulation:
