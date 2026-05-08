@@ -339,15 +339,19 @@ All of these are validated on the server side.
 
 The latest stabilization pass specifically added:
 
+- optional PostgreSQL-backed account and ban persistence
 - stronger password hashing with legacy migration
+- structured server logs and dedicated audit logs
 - HTTP security headers
 - POST body size limits
 - request rate limiting for auth/admin/write flows
+- CSRF-style token checks for authenticated state-changing actions
 - WebSocket payload limits
 - WebSocket per-socket message rate limiting
 - reconnect-safe player/spectator socket cleanup
 - session pruning
 - safer snapshot-rate telemetry smoothing on the client
+- automated smoke-test coverage for auth, join, spectate, and admin routes
 
 ---
 
@@ -398,8 +402,8 @@ The system is much safer and smoother now, but some constraints still exist:
 
 If you want to keep hardening the project further, the highest-value next upgrades would be:
 
-1. Move accounts and bans from JSON to PostgreSQL.
-2. Add structured server logging and security audit logs.
-3. Add CSRF-style protections if a broader browser-admin surface is introduced.
-4. Add matchmaking or region-aware room hosting if you expand beyond one live arena.
-5. Add automated smoke tests for auth, join, spectate, and admin routes.
+1. Extend the current persistence abstraction to support live migrations and larger account volumes more efficiently than full-state rewrites.
+2. Add room orchestration for true matchmaking, custom-room settings, and multi-region arena selection.
+3. Add automated gameplay simulation tests around combat, split/merge, and respawn behavior.
+4. Add moderation history views on top of the audit log stream.
+5. Add room-level balancing presets for food density, damage, score goal, and growth tuning.
