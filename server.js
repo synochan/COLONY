@@ -74,6 +74,18 @@ const HIVE_SCORE_STEAL_PCT = 0.42;
 const HIVE_SCORE_STEAL_MIN = 30;
 const HIVE_SCORE_STEAL_CAP = 780;
 const MAX_SOCKET_BACKLOG_BYTES = 256 * 1024;
+const MAX_HTTP_BODY_BYTES = 16 * 1024;
+const MAX_WS_PAYLOAD_BYTES = 8 * 1024;
+const MAX_INPUT_MESSAGES_PER_WINDOW = 90;
+const INPUT_RATE_WINDOW_MS = 1000;
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
+const SESSION_CLEANUP_INTERVAL_MS = 1000 * 60 * 10;
+const AUTH_RATE_LIMIT_WINDOW_MS = 1000 * 60 * 5;
+const AUTH_RATE_LIMIT_MAX = 30;
+const ADMIN_RATE_LIMIT_WINDOW_MS = 1000 * 60;
+const ADMIN_RATE_LIMIT_MAX = 80;
+const WRITE_RATE_LIMIT_WINDOW_MS = 1000 * 60;
+const WRITE_RATE_LIMIT_MAX = 45;
 const RESOURCE_VIEW_PADDING = 1150;
 const RECENT_EVENTS_INTERVAL = 4;
 const RESOURCE_REFRESH_INTERVAL = 18;
@@ -342,6 +354,17 @@ const MIME_TYPES = {
   ".ico": "image/x-icon"
 };
 
+const securityResponseHeaders = {
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "same-origin",
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Resource-Policy": "same-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "Content-Security-Policy":
+    "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; form-action 'self'"
+};
+
 const state = {
   players: new Map(),
   spectators: new Map(),
@@ -363,6 +386,7 @@ const state = {
 };
 
 const sessions = new Map();
+const requestRateLimits = new Map();
 let lastTick = Date.now();
 let saveTimer = null;
 let broadcastSequence = 0;
@@ -720,8 +744,35 @@ function pushEvent(type, payload) {
   }
 }
 
-function hashPassword(password, salt) {
+function hashLegacyPassword(password, salt) {
   return crypto.createHash("sha256").update(`${salt}:${password}`).digest("hex");
+}
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(String(password || ""), String(salt || ""), 64).toString("hex");
+}
+
+function verifyPassword(password, account) {
+  if (!account) {
+    return false;
+  }
+
+  if (account.passwordAlgo === "scrypt") {
+    return account.passwordHash === hashPassword(password, account.salt);
+  }
+
+  return account.passwordHash === hashLegacyPassword(password, account.salt);
+}
+
+function upgradePasswordHashIfNeeded(account, password) {
+  if (!account || account.passwordAlgo === "scrypt") {
+    return false;
+  }
+
+  account.passwordHash = hashPassword(password, account.salt);
+  account.passwordAlgo = "scrypt";
+  scheduleAccountSave();
+  return true;
 }
 
 function normalizeUsername(username) {
@@ -806,6 +857,7 @@ function ensureAdminAccount() {
       username,
       salt,
       passwordHash: hashPassword(ADMIN_PASSWORD, salt),
+      passwordAlgo: "scrypt",
       xp: xpFloorForLevel(MAX_LEVEL),
       level: MAX_LEVEL,
       ownedSkins: Object.keys(SKIN_LIBRARY),
@@ -943,6 +995,24 @@ function createGuestSession(guestName, selectedSkin) {
     createdAt: Date.now()
   });
   return token;
+}
+
+function pruneExpiredSessions() {
+  const cutoff = Date.now() - SESSION_TTL_MS;
+  for (const [token, session] of sessions.entries()) {
+    if ((session.createdAt || 0) < cutoff) {
+      sessions.delete(token);
+    }
+  }
+
+  for (const [spectatorId, spectator] of state.spectators.entries()) {
+    if (!sessions.has(spectator.sessionToken)) {
+      try {
+        spectator.socket?.close(4003, "Session expired");
+      } catch {}
+      state.spectators.delete(spectatorId);
+    }
+  }
 }
 
 function createSpectatorSession(session) {
@@ -1130,15 +1200,85 @@ function parseJsonSafe(rawBody) {
 function readBody(request) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    request.on("data", (chunk) => chunks.push(chunk));
+    let totalLength = 0;
+    request.on("data", (chunk) => {
+      totalLength += chunk.length;
+      if (totalLength > MAX_HTTP_BODY_BYTES) {
+        reject(new Error("BODY_TOO_LARGE"));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     request.on("end", () => resolve(Buffer.concat(chunks)));
     request.on("error", reject);
   });
 }
 
+function applySecurityHeaders(headers = {}) {
+  return {
+    ...securityResponseHeaders,
+    ...headers
+  };
+}
+
 function sendJson(response, statusCode, payload) {
-  response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+  response.writeHead(
+    statusCode,
+    applySecurityHeaders({
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store"
+    })
+  );
   response.end(JSON.stringify(payload));
+}
+
+function sendText(response, statusCode, text) {
+  response.writeHead(
+    statusCode,
+    applySecurityHeaders({
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store"
+    })
+  );
+  response.end(text);
+}
+
+function clientIpForRequest(request) {
+  const forwarded = String(request.headers["x-forwarded-for"] || "")
+    .split(",")[0]
+    .trim();
+  return forwarded || request.socket?.remoteAddress || "unknown";
+}
+
+function consumeRateLimit(scope, identifier, windowMs, maxRequests) {
+  const key = `${scope}:${identifier}`;
+  const now = Date.now();
+  const current = requestRateLimits.get(key);
+  if (!current || current.resetAt <= now) {
+    requestRateLimits.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+
+  if (current.count >= maxRequests) {
+    return false;
+  }
+
+  current.count += 1;
+  return true;
+}
+
+function requireRateLimit(response, scope, identifier, windowMs, maxRequests, message = "Too many requests.") {
+  if (consumeRateLimit(scope, identifier, windowMs, maxRequests)) {
+    return true;
+  }
+  sendJson(response, 429, { error: message });
+  return false;
+}
+
+function finiteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
 }
 
 function refreshPlayerDerivedStats(player) {
@@ -2509,8 +2649,8 @@ function handleRegister(request, response, payload) {
     return;
   }
 
-  if (password.length < 4) {
-    sendJson(response, 400, { error: "Password must be at least 4 characters." });
+  if (password.length < 8) {
+    sendJson(response, 400, { error: "Password must be at least 8 characters." });
     return;
   }
 
@@ -2530,6 +2670,7 @@ function handleRegister(request, response, payload) {
     username,
     salt,
     passwordHash: hashPassword(password, salt),
+    passwordAlgo: "scrypt",
     xp: 0,
     level: 1,
     ownedSkins: [...STARTER_SKINS],
@@ -2556,10 +2697,11 @@ function handleLogin(response, payload) {
   const password = String(payload.password || "");
   const account = findAccountByUsername(username);
 
-  if (!account || account.passwordHash !== hashPassword(password, account.salt)) {
+  if (!account || !verifyPassword(password, account)) {
     sendJson(response, 401, { error: "Invalid username or password." });
     return;
   }
+  upgradePasswordHashIfNeeded(account, password);
 
   if (isBannedAccount(account)) {
     sendJson(response, 403, { error: account.banReason || "This account has been banned." });
@@ -3142,15 +3284,17 @@ function serveFile(filePath, response) {
 
   fs.readFile(filePath, (error, content) => {
     if (error) {
-      response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      response.end("Not found");
+      sendText(response, 404, "Not found");
       return;
     }
 
-    response.writeHead(200, {
-      "Content-Type": contentType,
-      "Cache-Control": "no-store"
-    });
+    response.writeHead(
+      200,
+      applySecurityHeaders({
+        "Content-Type": contentType,
+        "Cache-Control": "no-store"
+      })
+    );
     response.end(content);
   });
 }
@@ -3163,6 +3307,7 @@ scheduleAccountSave();
 
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
+  const requestIp = clientIpForRequest(request);
 
   if (request.method === "GET" && requestUrl.pathname === "/healthz") {
     sendJson(response, isShuttingDown ? 503 : 200, {
@@ -3196,7 +3341,30 @@ const server = http.createServer(async (request, response) => {
   }
 
   if (request.method === "POST") {
-    const bodyBuffer = await readBody(request).catch(() => null);
+    const isAuthPath =
+      requestUrl.pathname === "/auth/register" || requestUrl.pathname === "/auth/login" || requestUrl.pathname === "/auth/guest";
+    const isAdminPath = requestUrl.pathname === "/admin/action";
+    const isWritePath = isAuthPath || isAdminPath || requestUrl.pathname === "/join" || requestUrl.pathname === "/spectate";
+
+    if (isAuthPath && !requireRateLimit(response, "auth", requestIp, AUTH_RATE_LIMIT_WINDOW_MS, AUTH_RATE_LIMIT_MAX, "Too many auth requests.")) {
+      return;
+    }
+    if (isAdminPath && !requireRateLimit(response, "admin", requestIp, ADMIN_RATE_LIMIT_WINDOW_MS, ADMIN_RATE_LIMIT_MAX, "Too many admin requests.")) {
+      return;
+    }
+    if (isWritePath && !requireRateLimit(response, "write", requestIp, WRITE_RATE_LIMIT_WINDOW_MS, WRITE_RATE_LIMIT_MAX, "Too many action requests.")) {
+      return;
+    }
+
+    const bodyBuffer = await readBody(request).catch((error) => error || null);
+    if (bodyBuffer instanceof Error) {
+      if (bodyBuffer.message === "BODY_TOO_LARGE") {
+        sendJson(response, 413, { error: "Request body too large." });
+        return;
+      }
+      sendJson(response, 400, { error: "Unable to read request body." });
+      return;
+    }
     const payload = bodyBuffer ? parseJsonSafe(bodyBuffer.toString("utf8") || "{}") : null;
 
     if (!payload) {
@@ -3254,15 +3422,14 @@ const server = http.createServer(async (request, response) => {
   const normalized = path.normalize(path.join(PUBLIC_DIR, safePath));
 
   if (!normalized.startsWith(PUBLIC_DIR)) {
-    response.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
-    response.end("Forbidden");
+    sendText(response, 403, "Forbidden");
     return;
   }
 
   serveFile(normalized, response);
 });
 
-const webSocketServer = new WebSocketServer({ server, perMessageDeflate: false });
+const webSocketServer = new WebSocketServer({ server, perMessageDeflate: false, maxPayload: MAX_WS_PAYLOAD_BYTES });
 
 function markSocketAlive() {
   this.isAlive = true;
@@ -3290,6 +3457,8 @@ webSocketServer.on("connection", (socket, request) => {
   socket._socket?.setNoDelay(true);
   socket._socket?.setKeepAlive(true, 30000);
   socket.isAlive = true;
+  socket.messageWindowStart = Date.now();
+  socket.messageWindowCount = 0;
   socket.on("pong", markSocketAlive);
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
   const playerId = requestUrl.searchParams.get("playerId");
@@ -3303,6 +3472,11 @@ webSocketServer.on("connection", (socket, request) => {
       return;
     }
 
+    if (spectator.socket && spectator.socket !== socket) {
+      try {
+        spectator.socket.close(4002, "Spectator reconnected");
+      } catch {}
+    }
     spectator.socket = socket;
     spectator.netState = { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
     socket.send(JSON.stringify({ type: "welcome", spectatorId: spectator.id, spectating: true }));
@@ -3311,6 +3485,16 @@ webSocketServer.on("connection", (socket, request) => {
     );
 
     socket.on("message", (rawMessage) => {
+      const now = Date.now();
+      if (now - socket.messageWindowStart > INPUT_RATE_WINDOW_MS) {
+        socket.messageWindowStart = now;
+        socket.messageWindowCount = 0;
+      }
+      socket.messageWindowCount += 1;
+      if (socket.messageWindowCount > MAX_INPUT_MESSAGES_PER_WINDOW) {
+        socket.close(1008, "Rate limit exceeded");
+        return;
+      }
       try {
         const message = JSON.parse(rawMessage.toString("utf8"));
         if (message.type !== "ping") {
@@ -3328,7 +3512,9 @@ webSocketServer.on("connection", (socket, request) => {
     });
 
     socket.on("close", () => {
-      state.spectators.delete(spectator.id);
+      if (state.spectators.get(spectator.id)?.socket === socket) {
+        state.spectators.delete(spectator.id);
+      }
     });
     return;
   }
@@ -3340,12 +3526,28 @@ webSocketServer.on("connection", (socket, request) => {
     return;
   }
 
+  if (player.socket && player.socket !== socket) {
+    try {
+      player.socket.close(4002, "Player reconnected");
+    } catch {}
+  }
   player.socket = socket;
   player.netState = { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
   socket.send(JSON.stringify({ type: "welcome", playerId: player.id, name: player.name }));
   socket.send(JSON.stringify(snapshotForViewer({ playerId: player.id, viewerState: player.netState })));
 
   socket.on("message", (rawMessage) => {
+    const now = Date.now();
+    if (now - socket.messageWindowStart > INPUT_RATE_WINDOW_MS) {
+      socket.messageWindowStart = now;
+      socket.messageWindowCount = 0;
+    }
+    socket.messageWindowCount += 1;
+    if (socket.messageWindowCount > MAX_INPUT_MESSAGES_PER_WINDOW) {
+      socket.close(1008, "Rate limit exceeded");
+      return;
+    }
+
     try {
       const message = JSON.parse(rawMessage.toString("utf8"));
       if (message.type === "ping") {
@@ -3365,16 +3567,16 @@ webSocketServer.on("connection", (socket, request) => {
 
       player.lastInputAt = Date.now();
       player.input = {
-        inputSeq: Number(message.inputSeq) || player.input.inputSeq || 0,
-        x: Number(message.x) || 0,
-        y: Number(message.y) || 0,
+        inputSeq: Math.max(0, Math.floor(finiteNumber(message.inputSeq, player.input.inputSeq || 0))),
+        x: clamp(finiteNumber(message.x, 0), -1, 1),
+        y: clamp(finiteNumber(message.y, 0), -1, 1),
         boost: Boolean(message.boost),
         hatch: Boolean(message.hatch),
         merge: Boolean(message.merge),
         split: Boolean(message.split),
         attack: Boolean(message.attack),
-        pointerX: Number(message.pointerX),
-        pointerY: Number(message.pointerY)
+        pointerX: finiteNumber(message.pointerX, player.x),
+        pointerY: finiteNumber(message.pointerY, player.y)
       };
       player.lastInputSeq = player.input.inputSeq;
     } catch (error) {
@@ -3383,7 +3585,7 @@ webSocketServer.on("connection", (socket, request) => {
   });
 
   socket.on("close", () => {
-    if (state.players.has(player.id)) {
+    if (state.players.has(player.id) && state.players.get(player.id)?.socket === socket) {
       state.players.delete(player.id);
       bumpLeaderboardVersion();
       pushEvent("leave", { playerId: player.id, name: player.name });
@@ -3393,6 +3595,7 @@ webSocketServer.on("connection", (socket, request) => {
 
 setInterval(updateGame, 1000 / TICK_RATE);
 setInterval(broadcastGameState, 1000 / BROADCAST_RATE);
+setInterval(pruneExpiredSessions, SESSION_CLEANUP_INTERVAL_MS).unref();
 
 function shutdownGracefully(signal) {
   if (isShuttingDown) {
