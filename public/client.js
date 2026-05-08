@@ -2,6 +2,7 @@ const canvas = document.getElementById("gameCanvas");
 const context = canvas.getContext("2d");
 const statusText = document.getElementById("statusText");
 const playerStats = document.getElementById("playerStats");
+const activeBuffs = document.getElementById("activeBuffs");
 const leaderboard = document.getElementById("leaderboard");
 const joinOverlay = document.getElementById("joinOverlay");
 const networkPanel = document.getElementById("networkPanel");
@@ -1457,6 +1458,9 @@ function renderAuthState() {
   }
 
   joinOverlay.classList.remove("hidden");
+  if (activeBuffs) {
+    activeBuffs.innerHTML = '<div class="buff-empty">Current buffs will appear here once you claim cards in-match.</div>';
+  }
   const isAuthed = Boolean(clientState.profile);
   authUnauthed.classList.toggle("hidden", isAuthed);
   authAuthed.classList.toggle("hidden", !isAuthed);
@@ -2098,6 +2102,34 @@ function renderNetworkPanel() {
     ` | Online ${onlinePlayers}`;
 }
 
+function renderActiveBuffs(player) {
+  if (!activeBuffs) {
+    return;
+  }
+
+  const cards = player?.activeCards || [];
+  if (!cards.length) {
+    activeBuffs.innerHTML = '<div class="buff-empty">Current buffs will appear here once you claim cards in-match.</div>';
+    return;
+  }
+
+  activeBuffs.innerHTML = cards
+    .map((card) => {
+      const tooltip = `${card.title}: ${card.description}`;
+      return `
+        <button
+          type="button"
+          class="buff-chip ${card.rarity}"
+          data-tooltip="${escapeHtml(tooltip)}"
+          aria-label="${escapeHtml(tooltip)}"
+        >
+          <img src="${cardArtDataUri(card)}" alt="${escapeHtml(card.title)}" draggable="false" />
+        </button>
+      `;
+    })
+    .join("");
+}
+
 function renderOverlay() {
   const you = getYou();
   const round = clientState.snapshot?.round;
@@ -2169,7 +2201,6 @@ function renderOverlay() {
       context.fillText(`Next card reward at Run Lv ${you.nextCardRewardLevel}`, hudLeft, hudTop + 88);
     }
   }
-  context.fillText("Large green circles can be eaten by your hive or by workers that grow large enough.", hudLeft, hudTop + 132);
   if (round) {
     context.fillText(`Round ${round.number} | Target ${currentSnapshot().config.roundScoreTarget} score`, hudLeft, hudTop + 110);
   }
@@ -2249,11 +2280,16 @@ function drawFrame() {
 function renderStats() {
   const snapshot = clientState.snapshot;
   playerStats.innerHTML = "";
+  if (activeBuffs) {
+    activeBuffs.innerHTML = '<div class="buff-empty">Current buffs will appear here once you claim cards in-match.</div>';
+  }
   leaderboard.innerHTML = "";
 
   if (!snapshot) {
     return;
   }
+
+  renderActiveBuffs(getYou() || getPlayerFromSnapshot(snapshot));
 
   for (const entry of snapshot.leaderboard) {
     const item = document.createElement("li");

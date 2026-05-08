@@ -3,11 +3,16 @@
   --panel: rgba(10, 8, 24, 0.72);
   --panel-strong: rgba(12, 9, 30, 0.94);
   --panel-line: rgba(255, 255, 255, 0.12);
+  --panel-soft: rgba(255, 255, 255, 0.06);
+  --panel-soft-strong: rgba(255, 255, 255, 0.08);
   --text: #f7f1d9;
   --muted: rgba(247, 241, 217, 0.76);
   --gold: #ffc857;
   --danger: #ff7b8b;
   --shadow: 0 22px 60px rgba(0, 0, 0, 0.35);
+  --radius-panel: 18px;
+  --radius-card: 16px;
+  --radius-control: 14px;
 }
 
 * {
@@ -36,6 +41,43 @@ body::before {
   pointer-events: none;
 }
 
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  transition:
+    transform 0.14s ease,
+    background-color 0.14s ease,
+    border-color 0.14s ease,
+    opacity 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+button:focus-visible,
+input:focus-visible,
+.buff-chip:focus-visible,
+.admin-action-link:focus-visible {
+  outline: 2px solid rgba(255, 200, 87, 0.85);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .game-shell {
   position: relative;
   width: 100vw;
@@ -60,7 +102,7 @@ body::before {
 .hud {
   position: absolute;
   z-index: 3;
-  border-radius: 18px;
+  border-radius: var(--radius-panel);
   padding: 14px 16px;
 }
 
@@ -125,8 +167,8 @@ body::before {
 }
 
 .hud-howto {
-  width: min(286px, calc(100vw - 32px));
-  max-height: min(54vh, 620px);
+  width: min(304px, calc(100vw - 32px));
+  max-height: min(66vh, 720px);
   padding: 12px 14px;
 }
 
@@ -160,6 +202,8 @@ body::before {
 .network-cluster {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  width: 100%;
   gap: 10px;
 }
 
@@ -173,13 +217,113 @@ body::before {
 }
 
 .stat-stack {
-  display: none;
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.hud-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.83rem;
+  line-height: 1.45;
+}
+
+.buff-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.buff-chip,
+.buff-empty {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  min-width: 42px;
+  min-height: 58px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.buff-chip {
+  appearance: none;
+  cursor: help;
+  font: inherit;
+  color: inherit;
+}
+
+.buff-chip img {
+  width: 34px;
+  height: 48px;
+  border-radius: 8px;
+  display: block;
+}
+
+.buff-chip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  min-width: 150px;
+  max-width: 220px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(10, 8, 24, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--text);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+  z-index: 12;
+}
+
+.buff-chip:hover::after,
+.buff-chip:focus-visible::after {
+  opacity: 1;
+}
+
+.buff-chip.uncommon {
+  border-color: rgba(96, 255, 179, 0.28);
+  background: rgba(96, 255, 179, 0.08);
+}
+
+.buff-chip.rare {
+  border-color: rgba(98, 184, 255, 0.3);
+  background: rgba(98, 184, 255, 0.08);
+}
+
+.buff-chip.epic {
+  border-color: rgba(206, 136, 255, 0.3);
+  background: rgba(206, 136, 255, 0.08);
+}
+
+.buff-chip.legendary {
+  border-color: rgba(255, 209, 102, 0.36);
+  background: rgba(255, 209, 102, 0.1);
+}
+
+.buff-empty {
+  padding: 8px 10px;
+  min-width: 0;
+  min-height: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
 }
 
 .stat-card {
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--panel-soft);
 }
 
 .stat-card.you {
@@ -203,6 +347,7 @@ body::before {
   margin-bottom: 8px;
   line-height: 1.4;
   color: var(--muted);
+  word-break: break-word;
 }
 
 .controls {
@@ -215,7 +360,7 @@ body::before {
   display: block;
   border-radius: 12px;
   padding: 9px 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--panel-soft);
   color: var(--muted);
   font-size: 0.9rem;
 }
@@ -260,7 +405,7 @@ body::before {
 .admin-empty {
   border-radius: 12px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--panel-soft);
   font-size: 0.82rem;
   color: var(--muted);
   line-height: 1.4;
@@ -352,8 +497,11 @@ body::before {
   color: rgba(255, 255, 255, 0.96);
   font-size: 0.9rem;
   font-weight: 800;
-  line-height: 1.2;
-  white-space: nowrap;
+  line-height: 1.35;
+  white-space: normal;
+  word-break: break-word;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .admin-page {
@@ -398,14 +546,16 @@ body::before {
 
 .admin-page-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+  justify-content: flex-end;
 }
 
 .admin-page-actions button,
 .admin-action-link {
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--radius-control);
   padding: 12px 14px;
   background: linear-gradient(135deg, #ffd36a, #ffb02e);
   color: #23163e;
@@ -413,6 +563,7 @@ body::before {
   font-weight: 900;
   text-decoration: none;
   cursor: pointer;
+  min-height: 48px;
 }
 
 .admin-action-link {
@@ -490,10 +641,12 @@ body::before {
 }
 
 .join-card {
-  width: min(520px, 100%);
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(88vh, 980px);
   border-radius: 24px;
   padding: 24px;
   background: var(--panel-strong);
+  overflow: auto;
 }
 
 .options-panel {
@@ -528,9 +681,9 @@ body::before {
 .option-row {
   display: grid;
   gap: 8px;
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   padding: 14px 14px 12px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--panel-soft);
 }
 
 .option-row > span {
@@ -577,14 +730,14 @@ body::before {
 .join-card button {
   width: 100%;
   margin-top: 10px;
-  border-radius: 14px;
+  border-radius: var(--radius-control);
   font: inherit;
 }
 
 .join-card input {
   border: 1px solid rgba(255, 255, 255, 0.16);
   padding: 13px 14px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--panel-soft-strong);
   color: var(--text);
 }
 
@@ -601,6 +754,13 @@ body::before {
   background: rgba(255, 255, 255, 0.09) !important;
   color: var(--text) !important;
   border: 1px solid rgba(255, 255, 255, 0.12) !important;
+}
+
+.secondary-button:hover:not(:disabled),
+.tab-button:hover:not(:disabled),
+.admin-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
 }
 
 .auth-message {
@@ -649,11 +809,12 @@ body::before {
 .skin-option {
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--panel-soft);
   color: var(--text);
   padding: 0;
   overflow: hidden;
   text-align: left;
+  min-height: 136px;
 }
 
 .skin-option.locked {
@@ -685,9 +846,9 @@ body::before {
 }
 
 .profile-summary {
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   padding: 12px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--panel-soft);
 }
 
 .card-tag-list {
@@ -767,9 +928,17 @@ body::before {
 
 .auth-actions {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 10px;
   margin-top: 16px;
+  align-items: stretch;
+}
+
+.auth-actions button {
+  min-height: 52px;
+  white-space: normal;
+  word-break: keep-all;
+  line-height: 1.2;
 }
 
 .card-choice-panel {
@@ -805,6 +974,11 @@ body::before {
   user-select: none;
   -webkit-user-select: none;
   touch-action: manipulation;
+}
+
+.card-choice:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.22);
 }
 
 .card-choice-art {
@@ -851,12 +1025,17 @@ body::before {
     width: min(240px, calc(50vw - 24px));
   }
 
+  .hud-bottom-left {
+    width: min(300px, calc(50vw - 24px));
+  }
+
   .hud-bottom-right {
     min-width: 0;
   }
 
   .network-cluster {
     flex-wrap: wrap;
+    align-items: stretch;
   }
 
   .hud-top-left h1 {
@@ -871,7 +1050,8 @@ body::before {
 @media (max-width: 700px) {
   .hud-top-left,
   .hud-top-right,
-  .hud-bottom-right {
+  .hud-bottom-right,
+  .hud-bottom-left {
     width: calc(100vw - 24px);
   }
 
@@ -886,9 +1066,19 @@ body::before {
     bottom: 12px;
   }
 
+  .hud-bottom-left {
+    left: 12px;
+    bottom: 86px;
+    max-height: min(42vh, 420px);
+  }
+
   .hud-bottom-right {
     min-width: 0;
     padding: 10px 12px;
+  }
+
+  .hud-howto {
+    width: auto;
   }
 
   .auth-tabs,
@@ -913,5 +1103,12 @@ body::before {
 
   .card-choice {
     min-height: 0;
+  }
+
+  .join-card,
+  .options-panel,
+  .card-choice-panel {
+    padding: 18px;
+    border-radius: 20px;
   }
 }
