@@ -32,6 +32,23 @@ const authMessage = document.getElementById("authMessage");
 const authUnauthed = document.getElementById("authUnauthed");
 const authAuthed = document.getElementById("authAuthed");
 const profileSummary = document.getElementById("profileSummary");
+const roomModeSelect = document.getElementById("roomModeSelect");
+const roomRegionSelect = document.getElementById("roomRegionSelect");
+const roomNameLabel = document.getElementById("roomNameLabel");
+const roomNameInput = document.getElementById("roomNameInput");
+const roomPickerLabel = document.getElementById("roomPickerLabel");
+const roomPickerSelect = document.getElementById("roomPickerSelect");
+const roomMaxPlayersInput = document.getElementById("roomMaxPlayersInput");
+const roomFoodTargetInput = document.getElementById("roomFoodTargetInput");
+const roomGrowthTargetInput = document.getElementById("roomGrowthTargetInput");
+const roomGoalInput = document.getElementById("roomGoalInput");
+const roomMapWidthInput = document.getElementById("roomMapWidthInput");
+const roomMapHeightInput = document.getElementById("roomMapHeightInput");
+const roomFoodValueInput = document.getElementById("roomFoodValueInput");
+const roomGrowthValueInput = document.getElementById("roomGrowthValueInput");
+const roomHiveDamageInput = document.getElementById("roomHiveDamageInput");
+const roomWorkerDamageInput = document.getElementById("roomWorkerDamageInput");
+const roomListSummary = document.getElementById("roomListSummary");
 const ownedSkinGrid = document.getElementById("ownedSkinGrid");
 const registerStarterSkins = document.getElementById("registerStarterSkins");
 const guestStarterSkins = document.getElementById("guestStarterSkins");
@@ -228,6 +245,26 @@ const clientState = {
   csrfToken: localStorage.getItem(CSRF_TOKEN_KEY) || "",
   settings: loadSettings(),
   profile: null,
+  availableRooms: [],
+  supportedRegions: ["singapore"],
+  roomSelection: {
+    mode: "matchmaking",
+    region: "singapore",
+    roomId: "",
+    roomName: "Custom Colony",
+    roomConfig: {
+      maxPlayers: 16,
+      foodTarget: 480,
+      growthNodeTarget: 24,
+      roundScoreTarget: 12000,
+      mapWidth: 8200,
+      mapHeight: 5200,
+      foodValueMultiplier: 1,
+      growthValueMultiplier: 1,
+      hiveDamageMultiplier: 1,
+      workerDamageMultiplier: 1
+    }
+  },
   authMode: "guest",
   playerId: null,
   spectatorId: null,
@@ -1207,6 +1244,108 @@ function renderProfileSummary() {
   openAdminDashboardButton?.classList.toggle("hidden", !profile.isAdmin);
 }
 
+function readRoomSelectionFromUi() {
+  clientState.roomSelection.mode = roomModeSelect?.value === "custom" ? "custom" : "matchmaking";
+  clientState.roomSelection.region = roomRegionSelect?.value || clientState.roomSelection.region || "singapore";
+  clientState.roomSelection.roomId = roomPickerSelect?.value || "";
+  clientState.roomSelection.roomName = (roomNameInput?.value || "Custom Colony").trim() || "Custom Colony";
+  clientState.roomSelection.roomConfig = {
+    maxPlayers: Number(roomMaxPlayersInput?.value || 16),
+    foodTarget: Number(roomFoodTargetInput?.value || 480),
+    growthNodeTarget: Number(roomGrowthTargetInput?.value || 24),
+    roundScoreTarget: Number(roomGoalInput?.value || 12000),
+    mapWidth: Number(roomMapWidthInput?.value || 8200),
+    mapHeight: Number(roomMapHeightInput?.value || 5200),
+    foodValueMultiplier: Number(roomFoodValueInput?.value || 1),
+    growthValueMultiplier: Number(roomGrowthValueInput?.value || 1),
+    hiveDamageMultiplier: Number(roomHiveDamageInput?.value || 1),
+    workerDamageMultiplier: Number(roomWorkerDamageInput?.value || 1)
+  };
+}
+
+function renderRoomSelection() {
+  const selection = clientState.roomSelection;
+  if (roomModeSelect) {
+    roomModeSelect.value = selection.mode;
+  }
+  if (roomRegionSelect) {
+    roomRegionSelect.innerHTML = (clientState.supportedRegions || ["singapore"])
+      .map((region) => `<option value="${escapeHtml(region)}">${escapeHtml(region)}</option>`)
+      .join("");
+    roomRegionSelect.value = selection.region || clientState.supportedRegions[0] || "singapore";
+  }
+  if (roomNameInput) {
+    roomNameInput.value = selection.roomName || "Custom Colony";
+  }
+  if (roomPickerSelect) {
+    const matchingRooms = (clientState.availableRooms || []).filter((room) => room.mode === "custom");
+    roomPickerSelect.innerHTML =
+      `<option value="">Create new custom room</option>` +
+      matchingRooms
+        .map(
+          (room) =>
+            `<option value="${escapeHtml(room.id)}">${escapeHtml(room.name)} • ${escapeHtml(room.region)} • ${escapeHtml(room.players)}/${escapeHtml(room.config?.maxPlayers || 0)}</option>`
+        )
+        .join("");
+    roomPickerSelect.value = selection.roomId || "";
+  }
+  if (roomMaxPlayersInput) {
+    roomMaxPlayersInput.value = String(selection.roomConfig.maxPlayers);
+  }
+  if (roomFoodTargetInput) {
+    roomFoodTargetInput.value = String(selection.roomConfig.foodTarget);
+  }
+  if (roomGrowthTargetInput) {
+    roomGrowthTargetInput.value = String(selection.roomConfig.growthNodeTarget);
+  }
+  if (roomGoalInput) {
+    roomGoalInput.value = String(selection.roomConfig.roundScoreTarget);
+  }
+  if (roomMapWidthInput) {
+    roomMapWidthInput.value = String(selection.roomConfig.mapWidth);
+  }
+  if (roomMapHeightInput) {
+    roomMapHeightInput.value = String(selection.roomConfig.mapHeight);
+  }
+  if (roomFoodValueInput) {
+    roomFoodValueInput.value = String(selection.roomConfig.foodValueMultiplier);
+  }
+  if (roomGrowthValueInput) {
+    roomGrowthValueInput.value = String(selection.roomConfig.growthValueMultiplier);
+  }
+  if (roomHiveDamageInput) {
+    roomHiveDamageInput.value = String(selection.roomConfig.hiveDamageMultiplier);
+  }
+  if (roomWorkerDamageInput) {
+    roomWorkerDamageInput.value = String(selection.roomConfig.workerDamageMultiplier);
+  }
+
+  const customMode = selection.mode === "custom";
+  roomNameLabel?.classList.toggle("hidden", !customMode);
+  roomPickerLabel?.classList.toggle("hidden", !customMode);
+  if (roomListSummary) {
+    const matchRooms = (clientState.availableRooms || []).filter((room) => room.mode === "matchmaking");
+    const customRooms = (clientState.availableRooms || []).filter((room) => room.mode === "custom");
+    roomListSummary.textContent = customMode
+      ? `${customRooms.length} custom room${customRooms.length === 1 ? "" : "s"} available. Select one to join it, or leave the picker empty to create a new room with your settings.`
+      : `${matchRooms.length} matchmaking room${matchRooms.length === 1 ? "" : "s"} available across ${clientState.supportedRegions.length} region${clientState.supportedRegions.length === 1 ? "" : "s"}.`;
+  }
+}
+
+async function fetchAvailableRooms() {
+  try {
+    const payload = await apiRequest("/rooms");
+    clientState.availableRooms = Array.isArray(payload.rooms) ? payload.rooms : [];
+    clientState.supportedRegions = Array.isArray(payload.supportedRegions) && payload.supportedRegions.length ? payload.supportedRegions : ["singapore"];
+    if (!clientState.roomSelection.region || !clientState.supportedRegions.includes(clientState.roomSelection.region)) {
+      clientState.roomSelection.region = payload.serverRegion || clientState.supportedRegions[0] || "singapore";
+    }
+    renderRoomSelection();
+  } catch {
+    renderRoomSelection();
+  }
+}
+
 function renderAdminPanel() {
   const isVisible = Boolean(clientState.connected && clientState.profile?.isAdmin);
   adminPanel?.classList.toggle("hidden", !isVisible);
@@ -1494,6 +1633,7 @@ function renderAuthState() {
   if (isAuthed) {
     renderProfileSummary();
     renderSkinGrid(ownedSkinGrid, Object.keys(SKINS), clientState.profile.selectedSkin, clientState.profile.ownedSkins);
+    renderRoomSelection();
   }
 
   switchAuthMode(clientState.authMode);
@@ -1513,6 +1653,7 @@ async function restoreSession() {
     });
     clientState.profile = payload.profile;
     storeCsrfToken(payload.csrfToken);
+    await fetchAvailableRooms();
     setAuthMessage(`Welcome back, ${payload.profile.displayName}. Your hive is ready.`);
   } catch (error) {
     clearToken();
@@ -1536,6 +1677,7 @@ async function registerAccount() {
     });
     storeSessionAuth(payload.authToken, payload.csrfToken);
     clientState.profile = payload.profile;
+    await fetchAvailableRooms();
     setAuthMessage("Account created. Pick your skin, then head into the wilds.");
     renderAuthState();
   } catch (error) {
@@ -1555,6 +1697,7 @@ async function loginAccount() {
     });
     storeSessionAuth(payload.authToken, payload.csrfToken);
     clientState.profile = payload.profile;
+    await fetchAvailableRooms();
     setAuthMessage(`Logged in as ${payload.profile.displayName}.`);
     renderAuthState();
   } catch (error) {
@@ -1574,6 +1717,7 @@ async function continueAsGuest() {
     });
     storeSessionAuth(payload.authToken, payload.csrfToken);
     clientState.profile = payload.profile;
+    await fetchAvailableRooms();
     setAuthMessage("Guest session ready. Jump in and see how long your hive survives.");
     renderAuthState();
   } catch (error) {
@@ -1726,6 +1870,7 @@ async function logout() {
   clientState.spectatorFocusId = null;
   closeOptionsMenu();
   setAuthMessage("Signed out.");
+  fetchAvailableRooms();
   renderAuthState();
 }
 
@@ -1760,6 +1905,7 @@ function returnToMainMenu() {
   joinOverlay.classList.remove("hidden");
   setStatus("Returned to the main menu. Press Play Now to respawn when you're ready.");
   setAuthMessage("Arena session closed. You can change skins, review cards, or jump back in.");
+  fetchAvailableRooms();
   renderAuthState();
 }
 
@@ -1790,9 +1936,7 @@ async function startSpectating() {
     const payload = await apiRequest("/spectate", {
       method: "POST",
       authToken: clientState.authToken,
-      body: {
-        authToken: clientState.authToken
-      }
+      body: currentRoomRequestBody()
     });
 
     clientState.spectatorId = payload.spectatorId;
@@ -1804,6 +1948,9 @@ async function startSpectating() {
     clientState.spectatingFromDeath = false;
     clientState.spectatorFocusId = null;
     clientState.profile = payload.profile;
+    if (payload.room) {
+      setStatus(`Spectating ${payload.room.name} in ${payload.room.region}.`);
+    }
     connectSocket("spectator");
   } catch (error) {
     setAuthMessage(error.message, true);
@@ -2328,6 +2475,33 @@ function renderStats() {
   }
 }
 
+function currentRoomRequestBody() {
+  readRoomSelectionFromUi();
+  const selection = clientState.roomSelection;
+  return {
+    authToken: clientState.authToken,
+    roomMode: selection.mode,
+    roomRegion: selection.region,
+    roomId: selection.mode === "custom" ? selection.roomId || "" : "",
+    roomName: selection.mode === "custom" ? selection.roomName : "",
+    roomConfig:
+      selection.mode === "custom"
+        ? {
+            maxPlayers: selection.roomConfig.maxPlayers,
+            foodTarget: selection.roomConfig.foodTarget,
+            growthNodeTarget: selection.roomConfig.growthNodeTarget,
+            roundScoreTarget: selection.roomConfig.roundScoreTarget,
+            mapWidth: selection.roomConfig.mapWidth,
+            mapHeight: selection.roomConfig.mapHeight,
+            foodValueMultiplier: selection.roomConfig.foodValueMultiplier,
+            growthValueMultiplier: selection.roomConfig.growthValueMultiplier,
+            hiveDamageMultiplier: selection.roomConfig.hiveDamageMultiplier,
+            workerDamageMultiplier: selection.roomConfig.workerDamageMultiplier
+          }
+        : undefined
+  };
+}
+
 async function joinGame() {
   if (!clientState.profile || !clientState.authToken) {
     setAuthMessage("Create an account or continue as a guest first.", true);
@@ -2340,9 +2514,7 @@ async function joinGame() {
     const payload = await apiRequest("/join", {
       method: "POST",
       authToken: clientState.authToken,
-      body: {
-        authToken: clientState.authToken
-      }
+      body: currentRoomRequestBody()
     });
 
     clientState.playerId = payload.playerId;
@@ -2352,6 +2524,9 @@ async function joinGame() {
     clientState.spectatingFromDeath = false;
     clientState.spectatorFocusId = null;
     clientState.profile = payload.profile;
+    if (payload.room) {
+      setStatus(`Joined ${payload.room.name} in ${payload.room.region}.`);
+    }
     connectSocket();
   } catch (error) {
     setAuthMessage(error.message, true);
@@ -2618,6 +2793,39 @@ for (const button of authModeButtons) {
   });
 }
 
+roomModeSelect?.addEventListener("change", () => {
+  playUiClickSound();
+  readRoomSelectionFromUi();
+  renderRoomSelection();
+});
+
+roomRegionSelect?.addEventListener("change", () => {
+  readRoomSelectionFromUi();
+  fetchAvailableRooms();
+});
+
+roomPickerSelect?.addEventListener("change", () => {
+  readRoomSelectionFromUi();
+});
+
+[
+  roomNameInput,
+  roomMaxPlayersInput,
+  roomFoodTargetInput,
+  roomGrowthTargetInput,
+  roomGoalInput,
+  roomMapWidthInput,
+  roomMapHeightInput,
+  roomFoodValueInput,
+  roomGrowthValueInput,
+  roomHiveDamageInput,
+  roomWorkerDamageInput
+].forEach((input) => {
+  input?.addEventListener("input", () => {
+    readRoomSelectionFromUi();
+  });
+});
+
 guestButton.addEventListener("click", () => {
   ensureAudioContext();
   playUiClickSound();
@@ -2796,6 +3004,7 @@ switchAuthMode("guest");
 applySettingsToUi();
 updateAudioMix();
 renderAuthState();
+fetchAvailableRooms();
 restoreSession();
 setInterval(sendInput, INPUT_SEND_INTERVAL_MS);
 requestAnimationFrame(drawFrame);

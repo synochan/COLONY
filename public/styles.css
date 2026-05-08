@@ -941,6 +941,44 @@ button:disabled {
   line-height: 1.2;
 }
 
+.room-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: var(--radius-card);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.room-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.room-panel-head select {
+  max-width: 220px;
+}
+
+.room-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin-top: 12px;
+}
+
+.room-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.room-list-summary {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 .card-choice-panel {
   width: min(860px, calc(100vw - 32px));
   border-radius: 26px;

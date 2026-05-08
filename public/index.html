@@ -127,6 +127,72 @@
 
           <div id="authAuthed" class="hidden">
             <div id="profileSummary" class="profile-summary"></div>
+            <div class="room-panel">
+              <div class="room-panel-head">
+                <p class="panel-label">Arena mode</p>
+                <select id="roomModeSelect">
+                  <option value="matchmaking">Matchmaking</option>
+                  <option value="custom">Custom Room</option>
+                </select>
+              </div>
+              <div class="room-grid">
+                <label>
+                  <span>Region</span>
+                  <select id="roomRegionSelect"></select>
+                </label>
+                <label id="roomNameLabel" class="hidden">
+                  <span>Room Name</span>
+                  <input id="roomNameInput" maxlength="28" placeholder="Custom Colony" />
+                </label>
+                <label id="roomPickerLabel" class="hidden">
+                  <span>Join Existing Room</span>
+                  <select id="roomPickerSelect">
+                    <option value="">Create new custom room</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Max Players</span>
+                  <input id="roomMaxPlayersInput" type="number" min="2" max="50" value="16" />
+                </label>
+                <label>
+                  <span>Food Target</span>
+                  <input id="roomFoodTargetInput" type="number" min="80" max="1600" value="480" />
+                </label>
+                <label>
+                  <span>Growth Nodes</span>
+                  <input id="roomGrowthTargetInput" type="number" min="4" max="120" value="24" />
+                </label>
+                <label>
+                  <span>Score Goal</span>
+                  <input id="roomGoalInput" type="number" min="3000" max="50000" value="12000" />
+                </label>
+                <label>
+                  <span>Map Width</span>
+                  <input id="roomMapWidthInput" type="number" min="2800" max="12000" value="8200" />
+                </label>
+                <label>
+                  <span>Map Height</span>
+                  <input id="roomMapHeightInput" type="number" min="1800" max="7200" value="5200" />
+                </label>
+                <label>
+                  <span>Food Weight</span>
+                  <input id="roomFoodValueInput" type="number" min="0.5" max="3" step="0.1" value="1" />
+                </label>
+                <label>
+                  <span>Growth Weight</span>
+                  <input id="roomGrowthValueInput" type="number" min="0.5" max="3" step="0.1" value="1" />
+                </label>
+                <label>
+                  <span>Hive Damage</span>
+                  <input id="roomHiveDamageInput" type="number" min="0.5" max="3" step="0.1" value="1" />
+                </label>
+                <label>
+                  <span>Worker Damage</span>
+                  <input id="roomWorkerDamageInput" type="number" min="0.5" max="3" step="0.1" value="1" />
+                </label>
+              </div>
+              <div id="roomListSummary" class="room-list-summary"></div>
+            </div>
             <p class="panel-label">Available skins</p>
             <div id="ownedSkinGrid" class="skin-grid"></div>
             <div class="auth-actions">
