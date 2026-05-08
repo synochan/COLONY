@@ -4,9 +4,11 @@
   "description": "Colony.io multiplayer browser game",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "smoke:test": "node scripts/smoke-test.js"
   },
   "dependencies": {
+    "pg": "^8.13.1",
     "ws": "^8.18.0"
   },
   "optionalDependencies": {

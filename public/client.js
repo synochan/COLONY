@@ -63,6 +63,7 @@ const authPanels = {
 };
 
 const AUTH_TOKEN_KEY = "colony_auth_token";
+const CSRF_TOKEN_KEY = "colony_csrf_token";
 const SETTINGS_KEY = "colony_settings";
 const STARTER_SKINS = ["ember", "tide", "moss"];
 const DEFAULT_SETTINGS = Object.freeze({
@@ -224,6 +225,7 @@ const MAX_CLIENT_SOCKET_BACKLOG_BYTES = 128 * 1024;
 
 const clientState = {
   authToken: localStorage.getItem(AUTH_TOKEN_KEY) || "",
+  csrfToken: localStorage.getItem(CSRF_TOKEN_KEY) || "",
   settings: loadSettings(),
   profile: null,
   authMode: "guest",
@@ -1101,6 +1103,10 @@ async function apiRequest(path, options = {}) {
   if (options.authToken) {
     headers.Authorization = `Bearer ${options.authToken}`;
   }
+  const csrfToken = options.csrfToken ?? clientState.csrfToken;
+  if (csrfToken) {
+    headers["X-CSRF-Token"] = csrfToken;
+  }
 
   const response = await fetch(path, {
     method: options.method || "GET",
@@ -1120,9 +1126,24 @@ function storeToken(token) {
   localStorage.setItem(AUTH_TOKEN_KEY, token);
 }
 
+function storeCsrfToken(token) {
+  clientState.csrfToken = token || "";
+  if (clientState.csrfToken) {
+    localStorage.setItem(CSRF_TOKEN_KEY, clientState.csrfToken);
+  } else {
+    localStorage.removeItem(CSRF_TOKEN_KEY);
+  }
+}
+
+function storeSessionAuth(authToken, csrfToken) {
+  storeToken(authToken);
+  storeCsrfToken(csrfToken);
+}
+
 function clearToken() {
   clientState.authToken = "";
   localStorage.removeItem(AUTH_TOKEN_KEY);
+  storeCsrfToken("");
 }
 
 function switchAuthMode(mode) {
@@ -1491,6 +1512,7 @@ async function restoreSession() {
       authToken: clientState.authToken
     });
     clientState.profile = payload.profile;
+    storeCsrfToken(payload.csrfToken);
     setAuthMessage(`Welcome back, ${payload.profile.displayName}. Your hive is ready.`);
   } catch (error) {
     clearToken();
@@ -1512,7 +1534,7 @@ async function registerAccount() {
         starterSkin: clientState.registerStarterSkin
       }
     });
-    storeToken(payload.authToken);
+    storeSessionAuth(payload.authToken, payload.csrfToken);
     clientState.profile = payload.profile;
     setAuthMessage("Account created. Pick your skin, then head into the wilds.");
     renderAuthState();
@@ -1531,7 +1553,7 @@ async function loginAccount() {
         password: loginPasswordInput.value
       }
     });
-    storeToken(payload.authToken);
+    storeSessionAuth(payload.authToken, payload.csrfToken);
     clientState.profile = payload.profile;
     setAuthMessage(`Logged in as ${payload.profile.displayName}.`);
     renderAuthState();
@@ -1550,7 +1572,7 @@ async function continueAsGuest() {
         starterSkin: clientState.guestStarterSkin
       }
     });
-    storeToken(payload.authToken);
+    storeSessionAuth(payload.authToken, payload.csrfToken);
     clientState.profile = payload.profile;
     setAuthMessage("Guest session ready. Jump in and see how long your hive survives.");
     renderAuthState();
@@ -1569,6 +1591,7 @@ async function selectSkin(skinId) {
       }
     });
     clientState.profile = payload.profile;
+    storeCsrfToken(payload.csrfToken);
     renderAuthState();
   } catch (error) {
     setAuthMessage(error.message, true);
@@ -1588,6 +1611,7 @@ async function selectCard(cardId, rewardLevel) {
         rewardLevel
       }
     });
+    storeCsrfToken(payload.csrfToken);
     applyChosenCardLocally(cardId, rewardLevel);
   } catch (error) {
     setAuthMessage(error.message, true);
@@ -1608,6 +1632,7 @@ async function fetchAdminDashboard() {
       authToken: clientState.authToken
     });
     clientState.adminDashboard = payload;
+    storeCsrfToken(payload.csrfToken);
     renderAdminPanel();
   } catch (error) {
     setAuthMessage(error.message, true);
@@ -1646,6 +1671,7 @@ async function runAdminAction(action, extra = {}) {
     if (payload.profile) {
       clientState.profile = payload.profile;
     }
+    storeCsrfToken(payload.csrfToken);
     if (payload.dashboard) {
       clientState.adminDashboard = payload.dashboard;
     }
@@ -1770,6 +1796,7 @@ async function startSpectating() {
     });
 
     clientState.spectatorId = payload.spectatorId;
+    storeCsrfToken(payload.csrfToken);
     clientState.playerId = null;
     clientState.snapshot = null;
     clientState.renderSnapshot = null;
@@ -2319,6 +2346,7 @@ async function joinGame() {
     });
 
     clientState.playerId = payload.playerId;
+    storeCsrfToken(payload.csrfToken);
     clientState.spectatorId = null;
     clientState.spectatorMode = false;
     clientState.spectatingFromDeath = false;
@@ -2403,7 +2431,7 @@ function connectSocket(mode = "player") {
     }
   });
 
-  clientState.socket.addEventListener("close", () => {
+  clientState.socket.addEventListener("close", (event) => {
     if (clientState.pingTimer) {
       clearInterval(clientState.pingTimer);
       clientState.pingTimer = null;
@@ -2425,7 +2453,10 @@ function connectSocket(mode = "player") {
     clientState.adminDashboard = null;
     stopAdminDashboardPolling();
     joinOverlay.classList.remove("hidden");
-    setStatus("Connection closed. Re-enter from your account or guest profile when you're ready.");
+    const closeCode = event.code || "";
+    const closeReason = event.reason || "";
+    const closeSuffix = closeCode ? ` (${closeCode}${closeReason ? `: ${closeReason}` : ""})` : "";
+    setStatus(`Connection closed${closeSuffix}. Re-enter from your account or guest profile when you're ready.`);
     renderAuthState();
   });
 

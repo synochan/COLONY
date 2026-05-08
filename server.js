@@ -76,7 +76,7 @@ const HIVE_SCORE_STEAL_CAP = 780;
 const MAX_SOCKET_BACKLOG_BYTES = 256 * 1024;
 const MAX_HTTP_BODY_BYTES = 16 * 1024;
 const MAX_WS_PAYLOAD_BYTES = 8 * 1024;
-const MAX_INPUT_MESSAGES_PER_WINDOW = 90;
+const MAX_INPUT_MESSAGES_PER_WINDOW = 240;
 const INPUT_RATE_WINDOW_MS = 1000;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
 const SESSION_CLEANUP_INTERVAL_MS = 1000 * 60 * 10;
@@ -86,6 +86,10 @@ const ADMIN_RATE_LIMIT_WINDOW_MS = 1000 * 60;
 const ADMIN_RATE_LIMIT_MAX = 80;
 const WRITE_RATE_LIMIT_WINDOW_MS = 1000 * 60;
 const WRITE_RATE_LIMIT_MAX = 45;
+const LOGS_DIR = path.join(DATA_DIR, "logs");
+const SERVER_LOG_FILE = path.join(LOGS_DIR, "server.log");
+const AUDIT_LOG_FILE = path.join(LOGS_DIR, "audit.log");
+const ENABLE_STRUCTURED_LOGS = process.env.ENABLE_STRUCTURED_LOGS !== "0";
 const RESOURCE_VIEW_PADDING = 1150;
 const RECENT_EVENTS_INTERVAL = 4;
 const RESOURCE_REFRESH_INTERVAL = 18;
@@ -390,9 +394,12 @@ const requestRateLimits = new Map();
 let lastTick = Date.now();
 let saveTimer = null;
 let broadcastSequence = 0;
+let accountStore = { accounts: [], bannedGuests: [] };
+let persistence = null;
 
 function ensureAccountStore() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(LOGS_DIR, { recursive: true });
 
   if (!fs.existsSync(ACCOUNTS_FILE)) {
     fs.writeFileSync(
@@ -409,7 +416,47 @@ function ensureAccountStore() {
   }
 }
 
-function loadAccountStore() {
+function writeStructuredLog(filePath, entry) {
+  if (!ENABLE_STRUCTURED_LOGS) {
+    return;
+  }
+
+  try {
+    fs.appendFileSync(filePath, `${JSON.stringify(entry)}\n`);
+  } catch {}
+}
+
+function logStructured(level, event, meta = {}) {
+  const entry = {
+    ts: new Date().toISOString(),
+    level,
+    event,
+    ...meta
+  };
+  const line = JSON.stringify(entry);
+  if (level === "error") {
+    console.error(line);
+  } else if (level === "warn") {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
+  writeStructuredLog(SERVER_LOG_FILE, entry);
+}
+
+function auditLog(action, meta = {}) {
+  const entry = {
+    ts: new Date().toISOString(),
+    action,
+    ...meta
+  };
+  writeStructuredLog(AUDIT_LOG_FILE, entry);
+  if (ENABLE_STRUCTURED_LOGS) {
+    console.log(JSON.stringify({ level: "audit", event: action, ...entry }));
+  }
+}
+
+function loadJsonAccountStore() {
   ensureAccountStore();
 
   try {
@@ -425,27 +472,186 @@ function loadAccountStore() {
   }
 }
 
-const accountStore = loadAccountStore();
+function createJsonPersistence() {
+  return {
+    mode: "json",
+    async init() {
+      ensureAccountStore();
+    },
+    async load() {
+      return loadJsonAccountStore();
+    },
+    async save(store) {
+      ensureAccountStore();
+      fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(store, null, 2));
+    }
+  };
+}
+
+function createPostgresPersistence() {
+  return {
+    mode: "postgres",
+    client: null,
+    async init() {
+      const { Client } = require("pg");
+      this.client = new Client({
+        connectionString: process.env.DATABASE_URL,
+        ssl: process.env.PGSSL === "1" ? { rejectUnauthorized: false } : undefined
+      });
+      await this.client.connect();
+      await this.client.query(`
+        CREATE TABLE IF NOT EXISTS colony_accounts (
+          id TEXT PRIMARY KEY,
+          username TEXT UNIQUE NOT NULL,
+          salt TEXT NOT NULL,
+          password_hash TEXT NOT NULL,
+          password_algo TEXT NOT NULL DEFAULT 'scrypt',
+          xp INTEGER NOT NULL DEFAULT 0,
+          level INTEGER NOT NULL DEFAULT 1,
+          owned_skins JSONB NOT NULL DEFAULT '[]'::jsonb,
+          selected_skin TEXT NOT NULL,
+          total_matches INTEGER NOT NULL DEFAULT 0,
+          total_kills INTEGER NOT NULL DEFAULT 0,
+          role TEXT NOT NULL DEFAULT 'player',
+          created_at BIGINT NOT NULL,
+          last_seen_at BIGINT NOT NULL,
+          banned_at BIGINT NULL,
+          ban_reason TEXT NULL
+        );
+      `);
+      await this.client.query(`
+        CREATE TABLE IF NOT EXISTS colony_banned_guests (
+          guest_name TEXT PRIMARY KEY,
+          banned_at BIGINT NOT NULL DEFAULT 0
+        );
+      `);
+    },
+    async load() {
+      const accountRows = await this.client.query(`
+        SELECT id, username, salt, password_hash, password_algo, xp, level, owned_skins, selected_skin, total_matches, total_kills, role, created_at, last_seen_at, banned_at, ban_reason
+        FROM colony_accounts
+        ORDER BY created_at ASC
+      `);
+      const guestRows = await this.client.query(`
+        SELECT guest_name FROM colony_banned_guests ORDER BY guest_name ASC
+      `);
+      return {
+        accounts: accountRows.rows.map((row) => ({
+          id: row.id,
+          username: row.username,
+          salt: row.salt,
+          passwordHash: row.password_hash,
+          passwordAlgo: row.password_algo || "scrypt",
+          xp: Number(row.xp || 0),
+          level: Number(row.level || 1),
+          ownedSkins: Array.isArray(row.owned_skins) ? row.owned_skins : [],
+          selectedSkin: row.selected_skin,
+          totalMatches: Number(row.total_matches || 0),
+          totalKills: Number(row.total_kills || 0),
+          role: row.role || "player",
+          createdAt: Number(row.created_at || Date.now()),
+          lastSeenAt: Number(row.last_seen_at || Date.now()),
+          bannedAt: row.banned_at ? Number(row.banned_at) : undefined,
+          banReason: row.ban_reason || undefined
+        })),
+        bannedGuests: guestRows.rows.map((row) => String(row.guest_name || "").toLowerCase())
+      };
+    },
+    async save(store) {
+      await this.client.query("BEGIN");
+      try {
+        await this.client.query("DELETE FROM colony_accounts");
+        await this.client.query("DELETE FROM colony_banned_guests");
+        for (const account of store.accounts) {
+          await this.client.query(
+            `
+              INSERT INTO colony_accounts (
+                id, username, salt, password_hash, password_algo, xp, level, owned_skins, selected_skin, total_matches, total_kills, role, created_at, last_seen_at, banned_at, ban_reason
+              ) VALUES (
+                $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16
+              )
+            `,
+            [
+              account.id,
+              account.username,
+              account.salt,
+              account.passwordHash,
+              account.passwordAlgo || "scrypt",
+              Number(account.xp || 0),
+              Number(account.level || 1),
+              JSON.stringify(account.ownedSkins || []),
+              account.selectedSkin || STARTER_SKINS[0],
+              Number(account.totalMatches || 0),
+              Number(account.totalKills || 0),
+              account.role || "player",
+              Number(account.createdAt || Date.now()),
+              Number(account.lastSeenAt || Date.now()),
+              account.bannedAt ? Number(account.bannedAt) : null,
+              account.banReason || null
+            ]
+          );
+        }
+        for (const guestName of store.bannedGuests || []) {
+          await this.client.query(
+            `INSERT INTO colony_banned_guests (guest_name, banned_at) VALUES ($1, $2)`,
+            [guestName, Date.now()]
+          );
+        }
+        await this.client.query("COMMIT");
+      } catch (error) {
+        await this.client.query("ROLLBACK");
+        throw error;
+      }
+    }
+  };
+}
+
+async function initializePersistence() {
+  ensureAccountStore();
+  persistence = createJsonPersistence();
+  if (process.env.DATABASE_URL) {
+    try {
+      const postgresPersistence = createPostgresPersistence();
+      await postgresPersistence.init();
+      persistence = postgresPersistence;
+      logStructured("info", "persistence.postgres.ready");
+    } catch (error) {
+      logStructured("warn", "persistence.postgres.failed", { message: error.message });
+      persistence = createJsonPersistence();
+      await persistence.init();
+    }
+  } else {
+    await persistence.init();
+  }
+
+  accountStore = await persistence.load();
+  accountStore.accounts = Array.isArray(accountStore.accounts) ? accountStore.accounts : [];
+  accountStore.bannedGuests = Array.isArray(accountStore.bannedGuests) ? accountStore.bannedGuests : [];
+}
 
 function scheduleAccountSave() {
   if (saveTimer) {
     return;
   }
 
-  saveTimer = setTimeout(() => {
+  saveTimer = setTimeout(async () => {
     saveTimer = null;
-    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accountStore, null, 2));
+    try {
+      await persistence.save(accountStore);
+    } catch (error) {
+      logStructured("error", "persistence.save.failed", { message: error.message });
+    }
   }, 300);
 }
 
-function flushAccountSaveNow() {
+async function flushAccountSaveNow() {
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
 
   ensureAccountStore();
-  fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accountStore, null, 2));
+  await persistence.save(accountStore);
 }
 
 function createId(prefix) {
@@ -978,6 +1184,7 @@ function createSessionForAccount(account) {
   const token = createId("auth");
   sessions.set(token, {
     token,
+    csrfToken: createId("csrf"),
     mode: "account",
     accountId: account.id,
     createdAt: Date.now()
@@ -989,6 +1196,7 @@ function createGuestSession(guestName, selectedSkin) {
   const token = createId("guest");
   sessions.set(token, {
     token,
+    csrfToken: createId("csrf"),
     mode: "guest",
     guestName,
     selectedSkin: isStarterSkin(selectedSkin) ? selectedSkin : STARTER_SKINS[0],
@@ -1096,6 +1304,12 @@ function buildProfileForSession(session) {
   return summarizeAccount(account);
 }
 
+function sessionResponse(session) {
+  return {
+    csrfToken: session?.csrfToken || ""
+  };
+}
+
 function adminAccountFromSession(session) {
   if (!session || session.mode !== "account") {
     return null;
@@ -1187,6 +1401,43 @@ function parseAuthToken(request, payload) {
     return String(payload.authToken).trim();
   }
   return "";
+}
+
+function parseCsrfToken(request, payload) {
+  const header = request.headers["x-csrf-token"];
+  if (header) {
+    return String(header).trim();
+  }
+  if (payload?.csrfToken) {
+    return String(payload.csrfToken).trim();
+  }
+  return "";
+}
+
+function originAllowed(request) {
+  const origin = String(request.headers.origin || "");
+  if (!origin) {
+    return true;
+  }
+  const host = String(request.headers.host || "");
+  return origin === `http://${host}` || origin === `https://${host}`;
+}
+
+function requireCsrf(request, response, session, payload) {
+  if (!session) {
+    sendJson(response, 401, { error: "Session is no longer valid." });
+    return false;
+  }
+  if (!originAllowed(request)) {
+    sendJson(response, 403, { error: "Origin not allowed." });
+    return false;
+  }
+  const token = parseCsrfToken(request, payload);
+  if (!token || token !== session.csrfToken) {
+    sendJson(response, 403, { error: "CSRF check failed." });
+    return false;
+  }
+  return true;
 }
 
 function parseJsonSafe(rawBody) {
@@ -2686,18 +2937,22 @@ function handleRegister(request, response, payload) {
   scheduleAccountSave();
 
   const authToken = createSessionForAccount(account);
+  const session = getSessionByToken(authToken);
+  auditLog("auth.register", { username: account.username, accountId: account.id, ip: clientIpForRequest(request) });
   sendJson(response, 200, {
     authToken,
-    profile: summarizeAccount(account)
+    profile: summarizeAccount(account),
+    ...sessionResponse(session)
   });
 }
 
-function handleLogin(response, payload) {
+function handleLogin(request, response, payload) {
   const username = normalizeUsername(payload.username);
   const password = String(payload.password || "");
   const account = findAccountByUsername(username);
 
   if (!account || !verifyPassword(password, account)) {
+    auditLog("auth.login.failed", { username, ip: clientIpForRequest(request) });
     sendJson(response, 401, { error: "Invalid username or password." });
     return;
   }
@@ -2713,13 +2968,16 @@ function handleLogin(response, payload) {
   scheduleAccountSave();
 
   const authToken = createSessionForAccount(account);
+  const session = getSessionByToken(authToken);
+  auditLog("auth.login.success", { username: account.username, accountId: account.id, ip: clientIpForRequest(request) });
   sendJson(response, 200, {
     authToken,
-    profile: summarizeAccount(account)
+    profile: summarizeAccount(account),
+    ...sessionResponse(session)
   });
 }
 
-function handleGuest(response, payload) {
+function handleGuest(request, response, payload) {
   const guestName = sanitizeGuestName(payload.name);
   if (isBannedGuestName(guestName)) {
     sendJson(response, 403, { error: "This guest profile has been banned." });
@@ -2727,9 +2985,12 @@ function handleGuest(response, payload) {
   }
   const selectedSkin = isStarterSkin(payload.starterSkin) ? payload.starterSkin : STARTER_SKINS[0];
   const authToken = createGuestSession(guestName, selectedSkin);
+  const session = getSessionByToken(authToken);
+  auditLog("auth.guest", { guestName, ip: clientIpForRequest(request) });
   sendJson(response, 200, {
     authToken,
-    profile: summarizeGuestSession(getSessionByToken(authToken))
+    profile: summarizeGuestSession(getSessionByToken(authToken)),
+    ...sessionResponse(session)
   });
 }
 
@@ -2746,7 +3007,7 @@ function handleAuthMe(request, response) {
     return;
   }
 
-  sendJson(response, 200, { profile });
+  sendJson(response, 200, { profile, ...sessionResponse(session) });
 }
 
 function handleAdminAccountsPreview(request, response) {
@@ -2766,12 +3027,16 @@ function handleAdminDashboard(request, response) {
     return;
   }
 
-  sendJson(response, 200, adminDashboardPayload());
+  sendJson(response, 200, { ...adminDashboardPayload(), ...sessionResponse(admin.session) });
 }
 
 function handleAdminAction(request, response, payload) {
   const admin = requireAdminSession(request, response, payload);
   if (!admin) {
+    return;
+  }
+  if (!requireCsrf(request, response, admin.session, payload)) {
+    auditLog("csrf.admin.failed", { admin: admin.account.username, ip: clientIpForRequest(request) });
     return;
   }
 
@@ -3094,13 +3359,15 @@ function handleAdminAction(request, response, payload) {
     return;
   }
 
+  auditLog("admin.action", { admin: admin.account.username, action, targetPlayerId, targetAccountId, targetGuestName });
   sendJson(response, 200, {
     ok: true,
     profile: buildProfileForSession(admin.session),
     adminState: {
       godMode: Boolean(player?.adminState?.godMode)
     },
-    dashboard: adminDashboardPayload()
+    dashboard: adminDashboardPayload(),
+    ...sessionResponse(admin.session)
   });
 }
 
@@ -3108,6 +3375,9 @@ function handleSelectSkin(request, response, payload) {
   const session = resolveSession(request, payload);
   if (!session) {
     sendJson(response, 401, { error: "Sign in first." });
+    return;
+  }
+  if (!requireCsrf(request, response, session, payload)) {
     return;
   }
 
@@ -3143,7 +3413,8 @@ function handleSelectSkin(request, response, payload) {
   }
 
   sendJson(response, 200, {
-    profile: buildProfileForSession(session)
+    profile: buildProfileForSession(session),
+    ...sessionResponse(session)
   });
 }
 
@@ -3151,6 +3422,9 @@ function handleSelectCard(request, response, payload) {
   const session = resolveSession(request, payload);
   if (!session) {
     sendJson(response, 401, { error: "Sign in first." });
+    return;
+  }
+  if (!requireCsrf(request, response, session, payload)) {
     return;
   }
 
@@ -3185,15 +3459,21 @@ function handleSelectCard(request, response, payload) {
   });
 
   sendJson(response, 200, {
-    ok: true
+    ok: true,
+    ...sessionResponse(session)
   });
 }
 
 function handleLogout(request, response, payload) {
   const token = parseAuthToken(request, payload);
+  const session = getSessionByToken(token);
+  if (!requireCsrf(request, response, session, payload)) {
+    return;
+  }
   if (token) {
     sessions.delete(token);
   }
+  auditLog("auth.logout", { sessionMode: session?.mode || "unknown", ip: clientIpForRequest(request) });
   sendJson(response, 200, { ok: true });
 }
 
@@ -3202,6 +3482,9 @@ function handleJoin(request, response, payload) {
 
   if (!session) {
     sendJson(response, 401, { error: "Choose guest or sign in before joining the arena." });
+    return;
+  }
+  if (!requireCsrf(request, response, session, payload)) {
     return;
   }
 
@@ -3245,9 +3528,11 @@ function handleJoin(request, response, payload) {
   sendJson(response, 200, {
     playerId: player.id,
     message: "Joined Colony.io",
-    profile: buildProfileForSession(session)
+    profile: buildProfileForSession(session),
+    ...sessionResponse(session)
   });
 
+  auditLog("arena.join", { playerId: player.id, name: player.name, mode: session.mode, ip: clientIpForRequest(request) });
   pushEvent("join", { playerId: player.id, name: player.name });
 }
 
@@ -3256,6 +3541,9 @@ function handleSpectate(request, response, payload) {
 
   if (!session) {
     sendJson(response, 401, { error: "Choose guest or sign in before spectating." });
+    return;
+  }
+  if (!requireCsrf(request, response, session, payload)) {
     return;
   }
 
@@ -3274,8 +3562,10 @@ function handleSpectate(request, response, payload) {
   sendJson(response, 200, {
     spectatorId: spectator.id,
     message: "Spectating Colony.io",
-    profile
+    profile,
+    ...sessionResponse(session)
   });
+  auditLog("arena.spectate", { spectatorId: spectator.id, mode: session.mode, ip: clientIpForRequest(request) });
 }
 
 function serveFile(filePath, response) {
@@ -3298,12 +3588,6 @@ function serveFile(filePath, response) {
     response.end(content);
   });
 }
-
-for (const account of accountStore.accounts) {
-  applyLevelUnlocks(account);
-}
-ensureAdminAccount();
-scheduleAccountSave();
 
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
@@ -3378,12 +3662,12 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (requestUrl.pathname === "/auth/login") {
-      handleLogin(response, payload);
+      handleLogin(request, response, payload);
       return;
     }
 
     if (requestUrl.pathname === "/auth/guest") {
-      handleGuest(response, payload);
+      handleGuest(request, response, payload);
       return;
     }
 
@@ -3515,6 +3799,10 @@ webSocketServer.on("connection", (socket, request) => {
       if (state.spectators.get(spectator.id)?.socket === socket) {
         state.spectators.delete(spectator.id);
       }
+      logStructured("info", "socket.spectator.closed", { spectatorId: spectator.id });
+    });
+    socket.on("error", (error) => {
+      logStructured("warn", "socket.spectator.error", { spectatorId: spectator.id, message: error.message });
     });
     return;
   }
@@ -3584,12 +3872,17 @@ webSocketServer.on("connection", (socket, request) => {
     }
   });
 
-  socket.on("close", () => {
+  socket.on("close", (code, reasonBuffer) => {
+    const reason = String(reasonBuffer || "");
     if (state.players.has(player.id) && state.players.get(player.id)?.socket === socket) {
       state.players.delete(player.id);
       bumpLeaderboardVersion();
       pushEvent("leave", { playerId: player.id, name: player.name });
     }
+    logStructured("info", "socket.player.closed", { playerId: player.id, code, reason });
+  });
+  socket.on("error", (error) => {
+    logStructured("warn", "socket.player.error", { playerId: player.id, message: error.message });
   });
 });
 
@@ -3597,16 +3890,16 @@ setInterval(updateGame, 1000 / TICK_RATE);
 setInterval(broadcastGameState, 1000 / BROADCAST_RATE);
 setInterval(pruneExpiredSessions, SESSION_CLEANUP_INTERVAL_MS).unref();
 
-function shutdownGracefully(signal) {
+async function shutdownGracefully(signal) {
   if (isShuttingDown) {
     return;
   }
 
   isShuttingDown = true;
   try {
-    flushAccountSaveNow();
+    await flushAccountSaveNow();
   } catch (error) {
-    console.error("Failed to flush account data during shutdown:", error);
+    logStructured("error", "shutdown.flush.failed", { signal, message: error.message });
   }
 
   for (const player of state.players.values()) {
@@ -3633,6 +3926,19 @@ function shutdownGracefully(signal) {
 process.on("SIGTERM", () => shutdownGracefully("SIGTERM"));
 process.on("SIGINT", () => shutdownGracefully("SIGINT"));
 
-server.listen(PORT, () => {
-  console.log(`Colony.io server running on http://localhost:${PORT}`);
+async function bootstrap() {
+  await initializePersistence();
+  for (const account of accountStore.accounts) {
+    applyLevelUnlocks(account);
+  }
+  ensureAdminAccount();
+  scheduleAccountSave();
+  server.listen(PORT, () => {
+    logStructured("info", "server.started", { port: PORT, persistence: persistence?.mode || "json" });
+  });
+}
+
+bootstrap().catch((error) => {
+  logStructured("error", "server.bootstrap.failed", { message: error.message });
+  process.exit(1);
 });

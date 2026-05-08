@@ -1,4 +1,5 @@
 const AUTH_TOKEN_KEY = "colony_auth_token";
+const CSRF_TOKEN_KEY = "colony_csrf_token";
 
 const adminPageStatus = document.getElementById("adminPageStatus");
 const adminPageAccess = document.getElementById("adminPageAccess");
@@ -19,6 +20,7 @@ const pageAdminResetRoundButton = document.getElementById("pageAdminResetRoundBu
 
 const state = {
   authToken: localStorage.getItem(AUTH_TOKEN_KEY) || "",
+  csrfToken: localStorage.getItem(CSRF_TOKEN_KEY) || "",
   profile: null,
   dashboard: null,
   timer: null
@@ -55,6 +57,9 @@ async function apiRequest(path, options = {}) {
   if (state.authToken) {
     headers.Authorization = `Bearer ${state.authToken}`;
   }
+  if (state.csrfToken) {
+    headers["X-CSRF-Token"] = state.csrfToken;
+  }
 
   const response = await fetch(path, {
     method: options.method || "GET",
@@ -65,6 +70,10 @@ async function apiRequest(path, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(payload.error || "Request failed.");
+  }
+  if (payload.csrfToken) {
+    state.csrfToken = payload.csrfToken;
+    localStorage.setItem(CSRF_TOKEN_KEY, state.csrfToken);
   }
   return payload;
 }
