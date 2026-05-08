@@ -197,7 +197,8 @@ const INPUT_SEND_INTERVAL_MS = 33;
 const PING_INTERVAL_MS = 2000;
 const INPUT_HEARTBEAT_MS = 120;
 const INPUT_IDLE_HEARTBEAT_MS = 280;
-const INPUT_POINTER_SEND_THRESHOLD_WORLD = 10;
+const INPUT_POINTER_SEND_THRESHOLD_WORLD = 2;
+const INPUT_POINTER_SIGNATURE_WORLD = 4;
 const MAX_CLIENT_SOCKET_BACKLOG_BYTES = 128 * 1024;
 
 const clientState = {
@@ -682,7 +683,9 @@ function inputSignature(input) {
     input.hatch ? 1 : 0,
     input.merge ? 1 : 0,
     input.split ? 1 : 0,
-    input.attack ? 1 : 0
+    input.attack ? 1 : 0,
+    Math.round(input.pointerX / INPUT_POINTER_SIGNATURE_WORLD),
+    Math.round(input.pointerY / INPUT_POINTER_SIGNATURE_WORLD)
   ].join("|");
 }
 
@@ -1497,7 +1500,7 @@ function sendInput(force = false) {
       nextInput.merge ||
       nextInput.split
   );
-  const minResendMs = activeInput ? INPUT_HEARTBEAT_MS : INPUT_IDLE_HEARTBEAT_MS;
+  const minResendMs = activeInput ? (nextInput.attack ? 33 : INPUT_HEARTBEAT_MS) : INPUT_IDLE_HEARTBEAT_MS;
   const changed = signature !== clientState.lastSentInputSignature;
   const pointerChanged = pointerDelta >= INPUT_POINTER_SEND_THRESHOLD_WORLD;
 
@@ -1698,7 +1701,11 @@ function renderPlayer(player, isYou) {
   }
 
   if (isYou) {
-    const commandScreen = worldToScreen(player.commandX, player.commandY);
+    const commandTarget =
+      clientState.connected && clientState.pointerInitialized && !clientState.spectatorMode
+        ? clientState.worldPointer
+        : { x: player.commandX, y: player.commandY };
+    const commandScreen = worldToScreen(commandTarget.x, commandTarget.y);
     context.beginPath();
     context.strokeStyle = `${skin.secondary}55`;
     context.lineWidth = Math.max(1, scaleWorld(2));
@@ -2235,12 +2242,12 @@ window.addEventListener("keyup", (event) => handleKeyChange(event, false));
 window.addEventListener("resize", resizeCanvas);
 window.visualViewport?.addEventListener("resize", resizeCanvas);
 
-canvas.addEventListener("mousemove", (event) => {
+canvas.addEventListener("pointermove", (event) => {
   updatePointerFromEvent(event);
-  sendInput(false);
+  sendInput(inputState.attack);
 });
 
-canvas.addEventListener("mousedown", (event) => {
+canvas.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 || !joinOverlay.classList.contains("hidden") || clientState.spectatorMode) {
     return;
   }
@@ -2249,7 +2256,7 @@ canvas.addEventListener("mousedown", (event) => {
   sendInput(true);
 });
 
-canvas.addEventListener("mouseup", (event) => {
+canvas.addEventListener("pointerup", (event) => {
   if (event.button !== 0) {
     return;
   }
@@ -2260,6 +2267,14 @@ canvas.addEventListener("mouseup", (event) => {
 
 canvas.addEventListener("mouseleave", () => {
   if (!inputState.attack) {
+    return;
+  }
+  inputState.attack = false;
+  sendInput(true);
+});
+
+window.addEventListener("pointerup", (event) => {
+  if (event.button !== 0 || !inputState.attack) {
     return;
   }
   inputState.attack = false;
