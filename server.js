@@ -1828,6 +1828,22 @@ function moveEntity(entity, targetX, targetY, speed, deltaSeconds, padding) {
   entity.y = clamp(entity.y, padding, MAP_HEIGHT - padding);
 }
 
+function distancePointToSegment(pointX, pointY, startX, startY, endX, endY) {
+  const segmentX = endX - startX;
+  const segmentY = endY - startY;
+  const segmentLengthSq = segmentX * segmentX + segmentY * segmentY;
+  if (segmentLengthSq <= 0.0001) {
+    return Math.hypot(pointX - startX, pointY - startY);
+  }
+
+  const projection =
+    ((pointX - startX) * segmentX + (pointY - startY) * segmentY) / segmentLengthSq;
+  const t = clamp(projection, 0, 1);
+  const closestX = startX + segmentX * t;
+  const closestY = startY + segmentY * t;
+  return Math.hypot(pointX - closestX, pointY - closestY);
+}
+
 function findClosestGrowthNodeAround(origin, radius) {
   let bestNode = null;
   let bestDistance = Infinity;
@@ -1920,6 +1936,38 @@ function tryConsumeNearbyFood(player, worker) {
   return true;
 }
 
+function tryConsumeFoodAlongPath(player, worker, fromX, fromY) {
+  let bestFood = null;
+  let bestDistance = Infinity;
+  const sweepRadius = worker.radius + 8;
+
+  for (const food of state.foods) {
+    const distanceToCommand = Math.hypot(food.x - player.commandPoint.x, food.y - player.commandPoint.y);
+    if (distanceToCommand > player.commandRange) {
+      continue;
+    }
+
+    const pathDistance = distancePointToSegment(food.x, food.y, fromX, fromY, worker.x, worker.y);
+    const collideDistance = food.size + sweepRadius;
+    if (pathDistance <= collideDistance && pathDistance < bestDistance) {
+      bestDistance = pathDistance;
+      bestFood = food;
+    }
+  }
+
+  if (!bestFood) {
+    return false;
+  }
+
+  worker.food += bestFood.value * WORKER_GROWTH_GAIN_MULTIPLIER;
+  refreshWorkerDerivedStats(worker, player);
+  worker.health = worker.healthMax;
+  player.health = clamp(player.health + bestFood.value * 0.32, 0, player.healthMax);
+  grantScore(player, bestFood.value);
+  removeFood(bestFood.id);
+  return true;
+}
+
 function tryConsumeNearbyGrowthNode(player, worker) {
   const node = findClosestCommandScopedGrowthNode(player, worker, worker.radius + 20);
   if (!node || !canWorkerConsumeGrowthNode(worker, node)) {
@@ -1947,21 +1995,35 @@ function handleWorkerCombat(player, worker, deltaSeconds) {
   const fallback = commandedNode || commandedFood || player.commandPoint;
 
   if (!target) {
+    const previousX = worker.x;
+    const previousY = worker.y;
     moveEntity(worker, fallback.x, fallback.y, workerSpeed(worker, player), deltaSeconds, worker.radius + 2);
     clampWorkerToCommandRange(player, worker);
     if (commandedNode) {
       tryConsumeNearbyGrowthNode(player, worker);
     } else if (commandedFood) {
+      if (tryConsumeFoodAlongPath(player, worker, previousX, previousY)) {
+        return;
+      }
       tryConsumeNearbyFood(player, worker);
+    } else {
+      if (tryConsumeFoodAlongPath(player, worker, previousX, previousY)) {
+        return;
+      }
     }
     return;
   }
 
   const targetPosition = target.kind === "worker" ? target.worker : target.player;
+  const previousX = worker.x;
+  const previousY = worker.y;
   moveEntity(worker, targetPosition.x, targetPosition.y, workerSpeed(worker, player), deltaSeconds, worker.radius + 2);
   clampWorkerToCommandRange(player, worker);
 
   if (tryConsumeNearbyGrowthNode(player, worker)) {
+    return;
+  }
+  if (tryConsumeFoodAlongPath(player, worker, previousX, previousY)) {
     return;
   }
   tryConsumeNearbyFood(player, worker);
