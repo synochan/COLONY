@@ -2017,6 +2017,7 @@ function createPlayer(identity) {
     health: PLAYER_BASE_HEALTH,
     healthMax: PLAYER_BASE_HEALTH,
     score: 0,
+    killStreak: 0,
     eggs: 1,
     eggProgress: 0,
     commandRange: COMMAND_RANGE_BASE,
@@ -2096,6 +2097,7 @@ function serializePublicPlayer(player) {
     health: Math.round(player.health),
     healthMax: Math.round(player.healthMax),
     score: Math.round(player.score),
+    killStreak: Math.floor(player.killStreak || 0),
     alive: player.alive,
     spawnProtectedMs: Math.max(0, (player.spawnGraceUntil || 0) - Date.now()),
     workers: player.workers.map((worker) => ({
@@ -2292,6 +2294,7 @@ function resetPlayer(player) {
   player.health = replacement.health;
   player.healthMax = replacement.healthMax;
   player.score = 0;
+  player.killStreak = 0;
   player.eggs = 1;
   player.eggProgress = 0;
   player.commandRange = replacement.commandRange;
@@ -2316,6 +2319,8 @@ function collapsePlayer(attacker, victim) {
   victim.respawnTimer = 3;
   victim.workers = [];
   victim.health = 0;
+  victim.killStreak = 0;
+  attacker.killStreak = (attacker.killStreak || 0) + 1;
   const stolenScore = clamp(victim.score * HIVE_SCORE_STEAL_PCT, HIVE_SCORE_STEAL_MIN, HIVE_SCORE_STEAL_CAP);
   attacker.health = clamp(attacker.health + 20, 0, attacker.healthMax);
   grantScore(attacker, COLONY_KILL_SCORE_REWARD);
@@ -2325,7 +2330,8 @@ function collapsePlayer(attacker, victim) {
   pushEvent("colony_down", {
     attacker: attacker.name,
     victim: victim.name,
-    stolenScore: Math.round(stolenScore)
+    stolenScore: Math.round(stolenScore),
+    streak: attacker.killStreak
   });
 }
 
@@ -2971,7 +2977,8 @@ function buildLeaderboard(players) {
       id: player.id,
       name: player.name,
       score: player.score,
-      workers: player.workers.length
+      workers: player.workers.length,
+      killStreak: Math.floor(player.killStreak || 0)
     }))
     .sort((left, right) => right.score - left.score)
     .slice(0, LEADERBOARD_SIZE);

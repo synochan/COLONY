@@ -5,6 +5,7 @@ const playerStats = document.getElementById("playerStats");
 const activeBuffs = document.getElementById("activeBuffs");
 const buffTooltip = document.getElementById("buffTooltip");
 const leaderboard = document.getElementById("leaderboard");
+const killFeedPanel = document.getElementById("killFeedPanel");
 const joinOverlay = document.getElementById("joinOverlay");
 const networkPanel = document.getElementById("networkPanel");
 const optionsToggleButton = document.getElementById("optionsToggleButton");
@@ -275,6 +276,7 @@ const clientState = {
   renderSnapshot: null,
   cardSelectionPending: false,
   cardOverlayKey: "",
+  killFeed: [],
   connected: false,
   spectatorMode: false,
   spectatingFromDeath: false,
@@ -558,11 +560,14 @@ function playEventSound(event) {
     return;
   }
   if (event.type === "worker_pickoff") {
-    playTone({ frequency: 220, duration: 0.08, gain: 0.08, type: "sawtooth", release: 0.08 });
+    playTone({ frequency: 180, duration: 0.06, gain: 0.09, type: "sawtooth", release: 0.06 });
+    playTone({ frequency: 340, duration: 0.04, gain: 0.05, type: "square", when: ensureAudioContext()?.currentTime + 0.035 || 0 });
     return;
   }
   if (event.type === "colony_down") {
-    playTone({ frequency: 240, duration: 0.22, gain: 0.1, type: "sawtooth", attack: 0.01, release: 0.25, detune: -120 });
+    playTone({ frequency: 150, duration: 0.22, gain: 0.11, type: "sawtooth", attack: 0.01, release: 0.2, detune: -120 });
+    playTone({ frequency: 300, duration: 0.12, gain: 0.08, type: "square", when: ensureAudioContext()?.currentTime + 0.04 || 0 });
+    playTone({ frequency: 520, duration: 0.08, gain: 0.05, type: "triangle", when: ensureAudioContext()?.currentTime + 0.12 || 0 });
     return;
   }
   if (event.type === "card_claimed") {
@@ -571,13 +576,30 @@ function playEventSound(event) {
   }
 }
 
+function pushKillFeedEvent(event) {
+  if (!event || event.type !== "colony_down") {
+    return;
+  }
+  const payload = event.payload || {};
+  const streak = Math.max(0, Math.floor(Number(payload.streak) || 0));
+  clientState.killFeed.unshift({
+    id: `${event.id || Date.now()}:${payload.attacker || ""}:${payload.victim || ""}`,
+    attacker: payload.attacker || "Unknown",
+    victim: payload.victim || "Unknown",
+    streak,
+    stolenScore: Math.max(0, Math.round(Number(payload.stolenScore) || 0)),
+    expiresAt: performance.now() + (streak >= 3 ? 5200 : 3600)
+  });
+  clientState.killFeed = clientState.killFeed.slice(0, 4);
+}
+
 function processRecentEvents(recentEvents) {
   if (!Array.isArray(recentEvents) || !recentEvents.length) {
     return;
   }
 
   for (const entry of recentEvents) {
-    const signature = `${entry.type}:${entry.playerId || ""}:${entry.targetPlayerId || ""}:${entry.workerId || ""}:${entry.time || ""}:${entry.rewardLevel || ""}`;
+    const signature = `${entry.id || ""}:${entry.type}:${entry.playerId || ""}:${entry.targetPlayerId || ""}:${entry.workerId || ""}:${entry.time || ""}:${entry.rewardLevel || ""}`;
     if (clientState.audio.processedEventKeys.includes(signature)) {
       continue;
     }
@@ -585,6 +607,7 @@ function processRecentEvents(recentEvents) {
     if (clientState.audio.processedEventKeys.length > 80) {
       clientState.audio.processedEventKeys.splice(0, clientState.audio.processedEventKeys.length - 80);
     }
+    pushKillFeedEvent(entry);
     playEventSound(entry);
   }
 }
@@ -1002,6 +1025,7 @@ function computeInputVector() {
 }
 
 function currentInputSnapshot() {
+  refreshWorldPointerFromScreen();
   const { x, y } = computeInputVector();
   return {
     x,
@@ -1034,8 +1058,15 @@ function updatePointerFromEvent(event) {
   const rect = canvas.getBoundingClientRect();
   inputState.pointerX = event.clientX - rect.left;
   inputState.pointerY = event.clientY - rect.top;
-  clientState.worldPointer = screenToWorld(inputState.pointerX, inputState.pointerY);
+  refreshWorldPointerFromScreen();
   clientState.pointerInitialized = true;
+}
+
+function refreshWorldPointerFromScreen() {
+  if (!clientState.pointerInitialized) {
+    return;
+  }
+  clientState.worldPointer = screenToWorld(inputState.pointerX, inputState.pointerY);
 }
 
 function recordSnapshotArrival(payload) {
@@ -2284,6 +2315,27 @@ function renderNetworkPanel() {
     ` | Online ${onlinePlayers}`;
 }
 
+function renderKillFeed() {
+  if (!killFeedPanel) {
+    return;
+  }
+  const now = performance.now();
+  clientState.killFeed = clientState.killFeed.filter((entry) => entry.expiresAt > now);
+  killFeedPanel.classList.toggle("hidden", clientState.killFeed.length === 0);
+  killFeedPanel.innerHTML = clientState.killFeed
+    .map((entry) => {
+      const streakText = entry.streak >= 2 ? `<strong>${entry.streak}x streak</strong>` : "<strong>Hive down</strong>";
+      const stealText = entry.stolenScore ? ` +${formatCompactNumber(entry.stolenScore)} pts` : "";
+      return `
+        <div class="kill-feed-item ${entry.streak >= 3 ? "hot" : ""}">
+          ${streakText}
+          <span>${escapeHtml(entry.attacker)} collapsed ${escapeHtml(entry.victim)}${escapeHtml(stealText)}</span>
+        </div>
+      `;
+    })
+    .join("");
+}
+
 function renderActiveBuffs(player) {
   if (!activeBuffs) {
     return;
@@ -2458,6 +2510,7 @@ function renderOverlay() {
 
 function drawFrame() {
   renderBackground();
+  refreshWorldPointerFromScreen();
   reconcileRenderSnapshot();
   if (clientState.network.lastSnapshotReceivedAt > 0) {
     clientState.network.snapshotAgeMs = Math.max(0, performance.now() - clientState.network.lastSnapshotReceivedAt);
@@ -2488,6 +2541,7 @@ function drawFrame() {
 
   renderOverlay();
   renderNetworkPanel();
+  renderKillFeed();
   requestAnimationFrame(drawFrame);
 }
 
@@ -2504,10 +2558,22 @@ function renderStats() {
   }
 
   renderActiveBuffs(getYou() || getPlayerFromSnapshot(snapshot));
+  const you = getYou();
+  if (you) {
+    const streak = Math.floor(you.killStreak || 0);
+    playerStats.innerHTML = `
+      <div class="stat-card you">
+        <div class="stat-row"><span>Score</span><strong>${formatCompactNumber(you.score)}</strong></div>
+        <div class="stat-row"><span>Run Lv</span><strong>${you.level}</strong></div>
+        <div class="stat-row"><span>Kill streak</span><strong>${streak}x</strong></div>
+      </div>
+    `;
+  }
 
   for (const entry of snapshot.leaderboard) {
     const item = document.createElement("li");
-    item.textContent = `${entry.name} - ${entry.score} pts - ${entry.workers} workers`;
+    const streak = entry.killStreak >= 2 ? ` - ${entry.killStreak}x streak` : "";
+    item.textContent = `${entry.name} - ${entry.score} pts - ${entry.workers} workers${streak}`;
     leaderboard.appendChild(item);
   }
 }
@@ -2635,6 +2701,9 @@ function connectSocket(mode = "player") {
       }
       if (you && !clientState.pointerInitialized) {
         clientState.worldPointer = { x: you.commandX, y: you.commandY };
+        const screen = worldToScreen(you.commandX, you.commandY);
+        inputState.pointerX = screen.x;
+        inputState.pointerY = screen.y;
       }
       renderStats();
       renderAuthState();
@@ -2660,6 +2729,7 @@ function connectSocket(mode = "player") {
     clientState.spectatingFromDeath = false;
     clientState.spectatorFocusId = null;
     clientState.audio.processedEventKeys = [];
+    clientState.killFeed = [];
     clientState.lastSentInputSignature = "";
     clientState.lastSentInputAt = 0;
     clientState.adminDashboard = null;
