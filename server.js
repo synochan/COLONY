@@ -392,7 +392,7 @@ function roomConfigDefaults() {
   };
 }
 
-function createRoomState(roomId, roomName, region, mode = "matchmaking", config = roomConfigDefaults()) {
+function createRoomState(roomId, roomName, region, mode = "public", config = roomConfigDefaults()) {
   return {
     id: roomId,
     name: roomName,
@@ -460,7 +460,7 @@ function roomDisplayName(roomState) {
   if (!roomState) {
     return "Unknown Room";
   }
-  return roomState.mode === "custom" ? roomState.name || "Custom Room" : `${roomState.region} Match`;
+  return roomState.mode === "custom" ? roomState.name || "Custom Room" : "Public Arena";
 }
 
 function normalizeRoomRegion(region) {
@@ -510,12 +510,12 @@ function createRoom({
   roomId = generateRoomId("room"),
   name = "",
   region = SERVER_REGION,
-  mode = "matchmaking",
+  mode = "public",
   config = roomConfigDefaults()
 } = {}) {
   const normalizedRegion = normalizeRoomRegion(region);
   const normalizedConfig = normalizeRoomConfig(config, mode === "custom");
-  const roomName = mode === "custom" ? String(name || "Custom Colony").slice(0, 28) : `${normalizedRegion} Match`;
+  const roomName = mode === "custom" ? String(name || "Custom Colony").slice(0, 28) : "Public Arena";
   const roomState = createRoomState(roomId, roomName, normalizedRegion, mode, normalizedConfig);
   const room = {
     id: roomId,
@@ -530,21 +530,25 @@ function getRoomById(roomId) {
   return roomId ? rooms.get(String(roomId).trim()) || null : null;
 }
 
-function ensureMatchmakingRoom(region = SERVER_REGION) {
+function ensurePublicArenaRoom(region = SERVER_REGION) {
   const normalizedRegion = normalizeRoomRegion(region);
   const candidates = Array.from(rooms.values())
-    .filter((room) => room.state.mode === "matchmaking" && room.state.region === normalizedRegion)
+    .filter((room) => room.state.mode === "public" && room.state.region === normalizedRegion)
     .sort((left, right) => left.state.players.size - right.state.players.size);
   const room = candidates.find((entry) => entry.state.players.size < entry.state.config.maxPlayers);
   if (room) {
     return room;
   }
   return createRoom({
-    roomId: generateRoomId(`match_${normalizedRegion}`),
+    roomId: generateRoomId(`arena_${normalizedRegion}`),
     region: normalizedRegion,
-    mode: "matchmaking",
+    mode: "public",
     config: roomConfigDefaults()
   });
+}
+
+function ensureMatchmakingRoom(region = SERVER_REGION) {
+  return ensurePublicArenaRoom(region);
 }
 
 function allRoomStates() {
@@ -768,6 +772,9 @@ function createPostgresPersistence() {
           banned_at BIGINT NOT NULL DEFAULT 0
         );
       `);
+      await this.client.query(`CREATE INDEX IF NOT EXISTS colony_accounts_username_idx ON colony_accounts (lower(username));`);
+      await this.client.query(`CREATE INDEX IF NOT EXISTS colony_accounts_role_idx ON colony_accounts (role);`);
+      await this.client.query(`CREATE INDEX IF NOT EXISTS colony_accounts_banned_idx ON colony_accounts (banned_at);`);
     },
     async load() {
       const accountRows = await this.client.query(`
@@ -1474,7 +1481,7 @@ function pruneExpiredSessions() {
 }
 
 function createSpectatorSession(session, roomId) {
-  const room = getRoomById(roomId) || ensureMatchmakingRoom(SERVER_REGION);
+  const room = getRoomById(roomId) || ensurePublicArenaRoom(SERVER_REGION);
   const spectator = {
     id: createId("spectator"),
     roomId: room.id,
@@ -1745,7 +1752,7 @@ function publicRoomsPayload() {
       id: roomState.id,
       name: roomDisplayName(roomState),
       region: roomState.region,
-      mode: roomState.mode,
+      mode: roomState.mode === "matchmaking" ? "public" : roomState.mode,
       players: roomState.players.size,
       spectators: roomState.spectators.size,
       roundStatus: roomState.round.status,
@@ -1758,7 +1765,7 @@ function publicRoomsPayload() {
     }))
     .sort((left, right) => {
       if (left.mode !== right.mode) {
-        return left.mode === "matchmaking" ? -1 : 1;
+        return left.mode === "public" ? -1 : 1;
       }
       return right.players - left.players;
     });
@@ -3483,6 +3490,27 @@ function handleAdminAction(request, response, payload) {
     return true;
   };
 
+  const resetAccountProgressById = (accountId) => {
+    const account = getAccountById(accountId);
+    if (!account || isAdminAccount(account)) {
+      return false;
+    }
+    account.xp = 0;
+    account.level = 1;
+    account.ownedSkins = [...STARTER_SKINS];
+    account.selectedSkin = STARTER_SKINS.includes(account.selectedSkin) ? account.selectedSkin : STARTER_SKINS[0];
+    account.totalMatches = 0;
+    account.totalKills = 0;
+    account.lastSeenAt = Date.now();
+    applyLevelUnlocks(account);
+    scheduleAccountSave();
+    kickSessionsForAccount(account.id);
+    if (adminRecord?.room) {
+      withRoomState(adminRecord.room, () => pushEvent("admin_reset_account", { admin: adminActorName, target: account.username }));
+    }
+    return true;
+  };
+
   const unbanGuestByName = (guestName) => {
     const normalized = normalizeGuestName(guestName);
     const before = (accountStore.bannedGuests || []).length;
@@ -3695,6 +3723,11 @@ function handleAdminAction(request, response, payload) {
       sendJson(response, 400, { error: "Unable to unban that account." });
       return;
     }
+  } else if (action === "reset_account_progress") {
+    if (!resetAccountProgressById(targetAccountId)) {
+      sendJson(response, 400, { error: "Unable to reset that account." });
+      return;
+    }
   } else if (action === "unban_guest") {
     if (!unbanGuestByName(targetGuestName)) {
       sendJson(response, 400, { error: "Unable to unban that guest." });
@@ -3725,7 +3758,7 @@ function handleAdminAction(request, response, payload) {
       pushEvent("admin_collapse", { admin: adminActorName, target: targetPlayer.name });
     });
   } else if (action === "reset_round") {
-    const targetRoom = adminRecord?.room || ensureMatchmakingRoom(SERVER_REGION);
+    const targetRoom = adminRecord?.room || ensurePublicArenaRoom(SERVER_REGION);
     withRoomState(targetRoom, () => startNextRound());
   } else {
     sendJson(response, 400, { error: "Unknown admin action." });
@@ -3854,7 +3887,7 @@ function handleLogout(request, response, payload) {
 }
 
 function resolveRequestedRoom(payload = {}) {
-  const roomMode = String(payload.roomMode || "matchmaking").trim().toLowerCase();
+  const roomMode = String(payload.roomMode || "public").trim().toLowerCase();
   const roomRegion = normalizeRoomRegion(payload.roomRegion || SERVER_REGION);
   if (roomMode === "custom") {
     const requestedRoom = getRoomById(payload.roomId);
@@ -3869,7 +3902,7 @@ function resolveRequestedRoom(payload = {}) {
       config: payload.roomConfig || {}
     });
   }
-  return ensureMatchmakingRoom(roomRegion);
+  return ensurePublicArenaRoom(roomRegion);
 }
 
 function handleJoin(request, response, payload) {
@@ -4377,7 +4410,7 @@ process.on("SIGINT", () => shutdownGracefully("SIGINT"));
 
 async function bootstrap() {
   await initializePersistence();
-  ensureMatchmakingRoom(SERVER_REGION);
+  ensurePublicArenaRoom(SERVER_REGION);
   for (const account of accountStore.accounts) {
     applyLevelUnlocks(account);
   }

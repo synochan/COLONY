@@ -7,6 +7,7 @@ const adminPageAccessMessage = document.getElementById("adminPageAccessMessage")
 const adminPageDashboard = document.getElementById("adminPageDashboard");
 const adminPageRefreshButton = document.getElementById("adminPageRefreshButton");
 const pageAdminNetworkDashboard = document.getElementById("pageAdminNetworkDashboard");
+const pageAdminRoomsDashboard = document.getElementById("pageAdminRoomsDashboard");
 const pageAdminPlayersDashboard = document.getElementById("pageAdminPlayersDashboard");
 const pageAdminAccountsDashboard = document.getElementById("pageAdminAccountsDashboard");
 const pageAdminGuestsDashboard = document.getElementById("pageAdminGuestsDashboard");
@@ -100,6 +101,7 @@ function renderDashboard() {
   const metrics = [
     ["Online", network.onlinePlayers ?? 0],
     ["Spectators", network.spectators ?? 0],
+    ["Rooms", network.rooms ?? 0],
     ["Sessions", network.sessions ?? 0],
     ["Tick / Broadcast", `${network.tickRate ?? 0} / ${network.broadcastRate ?? 0}`],
     ["Heap / RSS", `${network.heapUsedMb ?? 0}MB / ${network.rssMb ?? 0}MB`],
@@ -117,6 +119,28 @@ function renderDashboard() {
       `
     )
     .join("");
+
+  const rooms = Array.isArray(dashboard.rooms) ? dashboard.rooms : [];
+  if (pageAdminRoomsDashboard) {
+    pageAdminRoomsDashboard.innerHTML = rooms.length
+      ? rooms
+          .map(
+            (room) => `
+              <div class="admin-row">
+                <div class="admin-row-head">
+                  <strong>${escapeHtml(room.name)}</strong>
+                  <span class="admin-badge">${escapeHtml(room.mode || "public")}</span>
+                </div>
+                <div class="admin-row-meta">
+                  <span>${escapeHtml(room.region)} | ${escapeHtml(room.players)}/${escapeHtml(room.config?.maxPlayers || 0)} players | ${escapeHtml(room.spectators)} watching</span>
+                  <span>Goal ${formatCompactNumber(room.config?.roundScoreTarget)} | Food ${escapeHtml(room.config?.foodTarget || 0)} | Growth ${escapeHtml(room.config?.growthNodeTarget || 0)}</span>
+                </div>
+              </div>
+            `
+          )
+          .join("")
+      : '<div class="admin-empty"><strong>No active rooms.</strong></div>';
+  }
 
   const players = Array.isArray(dashboard.players) ? dashboard.players : [];
   pageAdminPlayersDashboard.innerHTML = players.length
@@ -170,6 +194,7 @@ function renderDashboard() {
                 : `
                     <div class="admin-actions">
                       <button type="button" class="admin-action warn" data-admin-action="kick_account_sessions" data-account-id="${escapeHtml(account.id)}">Kick Sessions</button>
+                      <button type="button" class="admin-action warn" data-admin-action="reset_account_progress" data-account-id="${escapeHtml(account.id)}">Reset Progress</button>
                       <button type="button" class="admin-action danger" data-admin-action="ban_account" data-account-id="${escapeHtml(account.id)}">Ban Account</button>
                     </div>
                   `;

@@ -33,6 +33,7 @@ const authUnauthed = document.getElementById("authUnauthed");
 const authAuthed = document.getElementById("authAuthed");
 const profileSummary = document.getElementById("profileSummary");
 const roomModeSelect = document.getElementById("roomModeSelect");
+const roomRegionLabel = document.getElementById("roomRegionLabel");
 const roomRegionSelect = document.getElementById("roomRegionSelect");
 const roomNameLabel = document.getElementById("roomNameLabel");
 const roomNameInput = document.getElementById("roomNameInput");
@@ -248,7 +249,7 @@ const clientState = {
   availableRooms: [],
   supportedRegions: ["singapore"],
   roomSelection: {
-    mode: "matchmaking",
+    mode: "public",
     region: "singapore",
     roomId: "",
     roomName: "Custom Colony",
@@ -1245,7 +1246,7 @@ function renderProfileSummary() {
 }
 
 function readRoomSelectionFromUi() {
-  clientState.roomSelection.mode = roomModeSelect?.value === "custom" ? "custom" : "matchmaking";
+  clientState.roomSelection.mode = roomModeSelect?.value === "custom" ? "custom" : "public";
   clientState.roomSelection.region = roomRegionSelect?.value || clientState.roomSelection.region || "singapore";
   clientState.roomSelection.roomId = roomPickerSelect?.value || "";
   clientState.roomSelection.roomName = (roomNameInput?.value || "Custom Colony").trim() || "Custom Colony";
@@ -1280,7 +1281,7 @@ function renderRoomSelection() {
   if (roomPickerSelect) {
     const matchingRooms = (clientState.availableRooms || []).filter((room) => room.mode === "custom");
     roomPickerSelect.innerHTML =
-      `<option value="">Create new custom room</option>` +
+      `<option value="">Create new custom game</option>` +
       matchingRooms
         .map(
           (room) =>
@@ -1321,14 +1322,17 @@ function renderRoomSelection() {
   }
 
   const customMode = selection.mode === "custom";
+  document.querySelector(".room-grid")?.classList.toggle("hidden", !customMode);
+  document.querySelectorAll(".room-grid label").forEach((label) => {
+    label.classList.toggle("hidden", !customMode);
+  });
   roomNameLabel?.classList.toggle("hidden", !customMode);
   roomPickerLabel?.classList.toggle("hidden", !customMode);
   if (roomListSummary) {
-    const matchRooms = (clientState.availableRooms || []).filter((room) => room.mode === "matchmaking");
     const customRooms = (clientState.availableRooms || []).filter((room) => room.mode === "custom");
     roomListSummary.textContent = customMode
-      ? `${customRooms.length} custom room${customRooms.length === 1 ? "" : "s"} available. Select one to join it, or leave the picker empty to create a new room with your settings.`
-      : `${matchRooms.length} matchmaking room${matchRooms.length === 1 ? "" : "s"} available across ${clientState.supportedRegions.length} region${clientState.supportedRegions.length === 1 ? "" : "s"}.`;
+      ? `${customRooms.length} custom game${customRooms.length === 1 ? "" : "s"} available. Select one, or leave it empty to create a new custom game.`
+      : "Play joins the public arena automatically. A new public lobby is created only when the active one is full.";
   }
 }
 
@@ -1420,12 +1424,12 @@ function renderAdminDashboard() {
     const metrics = [
       ["Online", network.onlinePlayers ?? 0],
       ["Spectators", network.spectators ?? 0],
+      ["Rooms", network.rooms ?? 0],
       ["Sessions", network.sessions ?? 0],
       ["Tick / Broadcast", `${network.tickRate ?? 0} / ${network.broadcastRate ?? 0}`],
       ["Heap / RSS", `${network.heapUsedMb ?? 0}MB / ${network.rssMb ?? 0}MB`],
       ["Uptime", formatDuration(network.uptimeSec)],
-      ["Food / Growth", `${network.foods ?? 0} / ${network.growthNodes ?? 0}`],
-      ["Leaderboard Ver", network.leaderboardVersion ?? 0]
+      ["Food / Growth", `${network.foods ?? 0} / ${network.growthNodes ?? 0}`]
     ];
     adminNetworkDashboard.innerHTML = metrics
       .map(
@@ -1622,7 +1626,7 @@ function renderAuthState() {
 
   joinOverlay.classList.remove("hidden");
   if (activeBuffs) {
-    activeBuffs.innerHTML = '<div class="buff-empty">Current buffs will appear here once you claim cards in-match.</div>';
+    activeBuffs.innerHTML = '<div class="buff-empty">No active buffs yet.</div>';
   }
   const isAuthed = Boolean(clientState.profile);
   authUnauthed.classList.toggle("hidden", isAuthed);
@@ -2286,7 +2290,7 @@ function renderActiveBuffs(player) {
 
   const cards = player?.activeCards || [];
   if (!cards.length) {
-    activeBuffs.innerHTML = '<div class="buff-empty">Current buffs will appear here once you claim cards in-match.</div>';
+    activeBuffs.innerHTML = '<div class="buff-empty">No active buffs yet.</div>';
     return;
   }
 
@@ -2458,7 +2462,7 @@ function renderStats() {
   const snapshot = clientState.snapshot;
   playerStats.innerHTML = "";
   if (activeBuffs) {
-    activeBuffs.innerHTML = '<div class="buff-empty">Current buffs will appear here once you claim cards in-match.</div>';
+    activeBuffs.innerHTML = '<div class="buff-empty">No active buffs yet.</div>';
   }
   leaderboard.innerHTML = "";
 

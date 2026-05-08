@@ -23,6 +23,7 @@
       <canvas id="gameCanvas"></canvas>
 
       <section class="hud hud-bottom-left hud-howto">
+        <div id="activeBuffs" class="buff-strip hud-buff-strip"></div>
         <h2>How To Play</h2>
         <div class="controls how-to-play">
           <span><strong>WASD</strong> move your colony core around the map</span>
@@ -33,7 +34,6 @@
           <span><strong>Left Click</strong> hold to send workers into raid mode and direct them</span>
           <span><strong>Shift</strong> burst forward by spending score instead of health</span>
         </div>
-        <div id="activeBuffs" class="buff-strip"></div>
         <div id="playerStats" class="stat-stack"></div>
       </section>
 
@@ -129,14 +129,14 @@
             <div id="profileSummary" class="profile-summary"></div>
             <div class="room-panel">
               <div class="room-panel-head">
-                <p class="panel-label">Arena mode</p>
+                <p class="panel-label">Arena</p>
                 <select id="roomModeSelect">
-                  <option value="matchmaking">Matchmaking</option>
-                  <option value="custom">Custom Room</option>
+                  <option value="public">Public Arena</option>
+                  <option value="custom">Custom Game</option>
                 </select>
               </div>
               <div class="room-grid">
-                <label>
+                <label id="roomRegionLabel">
                   <span>Region</span>
                   <select id="roomRegionSelect"></select>
                 </label>
@@ -147,7 +147,7 @@
                 <label id="roomPickerLabel" class="hidden">
                   <span>Join Existing Room</span>
                   <select id="roomPickerSelect">
-                    <option value="">Create new custom room</option>
+                    <option value="">Create new custom game</option>
                   </select>
                 </label>
                 <label>
