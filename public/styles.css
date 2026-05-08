@@ -157,6 +157,21 @@ body::before {
   padding: 10px 14px;
 }
 
+.network-cluster {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hud-mini-button {
+  width: auto !important;
+  min-width: 92px;
+  margin-top: 0 !important;
+  padding: 9px 12px !important;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
 .stat-stack {
   display: none;
 }
@@ -459,6 +474,16 @@ body::before {
   pointer-events: auto;
 }
 
+.options-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(5, 4, 16, 0.42);
+}
+
 .join-overlay.hidden,
 .hidden {
   display: none !important;
@@ -469,6 +494,76 @@ body::before {
   border-radius: 24px;
   padding: 24px;
   background: var(--panel-strong);
+}
+
+.options-panel {
+  width: min(560px, calc(100vw - 32px));
+  border-radius: 24px;
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(12, 9, 30, 0.96);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow);
+}
+
+.options-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.options-close-button {
+  width: auto !important;
+  margin-top: 0 !important;
+  min-width: 88px;
+}
+
+.options-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.option-row {
+  display: grid;
+  gap: 8px;
+  border-radius: 16px;
+  padding: 14px 14px 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.option-row > span {
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.option-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.option-control input[type="range"] {
+  flex: 1 1 auto;
+  margin-top: 0;
+}
+
+.option-control strong {
+  min-width: 46px;
+  text-align: right;
+  font-size: 0.82rem;
+}
+
+.option-toggle {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.option-toggle input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  margin: 0;
 }
 
 .join-card label,
@@ -672,7 +767,7 @@ body::before {
 
 .auth-actions {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 10px;
   margin-top: 16px;
 }
@@ -760,6 +855,10 @@ body::before {
     min-width: 0;
   }
 
+  .network-cluster {
+    flex-wrap: wrap;
+  }
+
   .hud-top-left h1 {
     font-size: 1.15rem;
   }
@@ -795,6 +894,17 @@ body::before {
   .auth-tabs,
   .auth-actions {
     grid-template-columns: 1fr;
+  }
+
+  .options-head,
+  .option-control {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .option-control strong {
+    min-width: 0;
+    text-align: left;
   }
 
   .card-choice-grid {

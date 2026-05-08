@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Colony.io</title>
+    <meta name="theme-color" content="#ffb84d" />
+    <link rel="icon" href="/icons/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/svg+xml" href="/icons/colony-mark.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -36,7 +42,10 @@
       </section>
 
       <section class="hud hud-bottom-right">
-        <div id="networkPanel" class="network-strip"></div>
+        <div class="network-cluster">
+          <div id="networkPanel" class="network-strip"></div>
+          <button id="optionsToggleButton" type="button" class="secondary-button hud-mini-button">Options</button>
+        </div>
       </section>
 
       <section id="adminPanel" class="hud hud-top-left admin-hud hidden">
@@ -122,6 +131,7 @@
             <div class="auth-actions">
               <button id="enterArenaButton" type="button">Play Now</button>
               <button id="spectateButton" type="button" class="secondary-button">Spectate</button>
+              <button id="openOptionsMenuButton" type="button" class="secondary-button">Options</button>
               <button id="openAdminDashboardButton" type="button" class="secondary-button hidden">Admin Dashboard</button>
               <button id="logoutButton" type="button" class="secondary-button">Log Out</button>
             </div>
@@ -138,6 +148,52 @@
           </p>
           <div id="cardChoiceGrid" class="card-choice-grid"></div>
           <p id="cardChoiceHint" class="card-choice-hint"></p>
+        </div>
+      </section>
+
+      <section id="optionsOverlay" class="options-overlay hidden">
+        <div class="options-panel">
+          <div class="options-head">
+            <div>
+              <p class="eyebrow">Settings</p>
+              <h2>Game Options</h2>
+            </div>
+            <button id="closeOptionsButton" type="button" class="secondary-button options-close-button">Close</button>
+          </div>
+          <p class="join-copy">
+            Tune the experience for your device. Audio settings apply locally on this browser.
+          </p>
+          <div class="options-grid">
+            <label class="option-row option-toggle" for="muteAllToggle">
+              <span>Mute All Audio</span>
+              <input id="muteAllToggle" type="checkbox" />
+            </label>
+            <label class="option-row option-toggle" for="lowGraphicsToggle">
+              <span>Low Graphics Mode</span>
+              <input id="lowGraphicsToggle" type="checkbox" />
+            </label>
+            <label class="option-row" for="masterVolumeInput">
+              <span>Master Volume</span>
+              <div class="option-control">
+                <input id="masterVolumeInput" type="range" min="0" max="100" step="1" />
+                <strong id="masterVolumeValue">70%</strong>
+              </div>
+            </label>
+            <label class="option-row" for="musicVolumeInput">
+              <span>Music Volume</span>
+              <div class="option-control">
+                <input id="musicVolumeInput" type="range" min="0" max="100" step="1" />
+                <strong id="musicVolumeValue">45%</strong>
+              </div>
+            </label>
+            <label class="option-row" for="sfxVolumeInput">
+              <span>Sound Effects</span>
+              <div class="option-control">
+                <input id="sfxVolumeInput" type="range" min="0" max="100" step="1" />
+                <strong id="sfxVolumeValue">75%</strong>
+              </div>
+            </label>
+          </div>
         </div>
       </section>
     </main>

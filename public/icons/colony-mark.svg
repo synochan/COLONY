@@ -1,0 +1,44 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bgGlow" cx="50%" cy="40%" r="80%">
+      <stop offset="0%" stop-color="#2f275f"/>
+      <stop offset="100%" stop-color="#140f31"/>
+    </radialGradient>
+    <radialGradient id="hiveGlow" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#ffbf72" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#ff7a45" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hiveFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffcf70"/>
+      <stop offset="100%" stop-color="#ff9e35"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="110" fill="url(#bgGlow)"/>
+  <g opacity="0.18" stroke="#fff4d8" stroke-width="1">
+    <path d="M64 0v512M128 0v512M192 0v512M256 0v512M320 0v512M384 0v512M448 0v512"/>
+    <path d="M0 64h512M0 128h512M0 192h512M0 256h512M0 320h512M0 384h512M0 448h512"/>
+  </g>
+  <circle cx="266" cy="258" r="210" fill="none" stroke="#ff6b6b" stroke-opacity="0.45" stroke-width="4"/>
+  <g fill="#ffd166">
+    <circle cx="92" cy="150" r="8"/>
+    <circle cx="132" cy="116" r="6"/>
+    <circle cx="396" cy="158" r="6"/>
+    <circle cx="366" cy="404" r="10"/>
+    <circle cx="288" cy="114" r="9"/>
+  </g>
+  <g stroke="#d7923a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256 256L178 224"/>
+    <path d="M256 256L154 264"/>
+    <path d="M256 256L208 158"/>
+  </g>
+  <g fill="#ffca6e" stroke="#ff9b37" stroke-width="4">
+    <path d="M178 208l14 16-14 16-14-16z"/>
+    <path d="M154 248l14 16-14 16-14-16z"/>
+    <path d="M208 142l10 12-10 12-10-12z"/>
+  </g>
+  <circle cx="256" cy="256" r="52" fill="url(#hiveGlow)"/>
+  <circle cx="256" cy="256" r="30" fill="url(#hiveFill)"/>
+  <circle cx="246" cy="248" r="10" fill="#ff6b6b"/>
+  <circle cx="260" cy="260" r="5.5" fill="#1c1738"/>
+  <rect x="232" y="284" width="48" height="7" rx="3.5" fill="#ff6b6b"/>
+</svg>

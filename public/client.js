@@ -5,6 +5,7 @@ const playerStats = document.getElementById("playerStats");
 const leaderboard = document.getElementById("leaderboard");
 const joinOverlay = document.getElementById("joinOverlay");
 const networkPanel = document.getElementById("networkPanel");
+const optionsToggleButton = document.getElementById("optionsToggleButton");
 const adminPanel = document.getElementById("adminPanel");
 const adminNetworkDashboard = document.getElementById("adminNetworkDashboard");
 const adminPlayersDashboard = document.getElementById("adminPlayersDashboard");
@@ -15,6 +16,17 @@ const cardChoiceTitle = document.getElementById("cardChoiceTitle");
 const cardChoiceText = document.getElementById("cardChoiceText");
 const cardChoiceGrid = document.getElementById("cardChoiceGrid");
 const cardChoiceHint = document.getElementById("cardChoiceHint");
+const optionsOverlay = document.getElementById("optionsOverlay");
+const closeOptionsButton = document.getElementById("closeOptionsButton");
+const openOptionsMenuButton = document.getElementById("openOptionsMenuButton");
+const muteAllToggle = document.getElementById("muteAllToggle");
+const lowGraphicsToggle = document.getElementById("lowGraphicsToggle");
+const masterVolumeInput = document.getElementById("masterVolumeInput");
+const musicVolumeInput = document.getElementById("musicVolumeInput");
+const sfxVolumeInput = document.getElementById("sfxVolumeInput");
+const masterVolumeValue = document.getElementById("masterVolumeValue");
+const musicVolumeValue = document.getElementById("musicVolumeValue");
+const sfxVolumeValue = document.getElementById("sfxVolumeValue");
 const authMessage = document.getElementById("authMessage");
 const authUnauthed = document.getElementById("authUnauthed");
 const authAuthed = document.getElementById("authAuthed");
@@ -50,7 +62,15 @@ const authPanels = {
 };
 
 const AUTH_TOKEN_KEY = "colony_auth_token";
+const SETTINGS_KEY = "colony_settings";
 const STARTER_SKINS = ["ember", "tide", "moss"];
+const DEFAULT_SETTINGS = Object.freeze({
+  muted: false,
+  masterVolume: 0.7,
+  musicVolume: 0.45,
+  sfxVolume: 0.78,
+  lowGraphics: false
+});
 const SKIN_UNLOCK_LEVELS = {
   ember: "Starter",
   tide: "Starter",
@@ -203,6 +223,7 @@ const MAX_CLIENT_SOCKET_BACKLOG_BYTES = 128 * 1024;
 
 const clientState = {
   authToken: localStorage.getItem(AUTH_TOKEN_KEY) || "",
+  settings: loadSettings(),
   profile: null,
   authMode: "guest",
   playerId: null,
@@ -245,7 +266,17 @@ const clientState = {
   registerStarterSkin: STARTER_SKINS[0],
   guestStarterSkin: STARTER_SKINS[0],
   adminDashboard: null,
-  adminDashboardTimer: null
+  adminDashboardTimer: null,
+  audio: {
+    context: null,
+    masterGain: null,
+    musicGain: null,
+    sfxGain: null,
+    musicLoopTimer: null,
+    musicStep: 0,
+    processedEventKeys: [],
+    uiPrimed: false
+  }
 };
 
 function resizeCanvas() {
@@ -269,6 +300,274 @@ function setStatus(text) {
 function setAuthMessage(text, isError = false) {
   authMessage.textContent = text || "";
   authMessage.classList.toggle("error", Boolean(isError));
+}
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) {
+      return { ...DEFAULT_SETTINGS };
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      muted: Boolean(parsed.muted),
+      masterVolume: clampUnit(parsed.masterVolume, DEFAULT_SETTINGS.masterVolume),
+      musicVolume: clampUnit(parsed.musicVolume, DEFAULT_SETTINGS.musicVolume),
+      sfxVolume: clampUnit(parsed.sfxVolume, DEFAULT_SETTINGS.sfxVolume),
+      lowGraphics: Boolean(parsed.lowGraphics)
+    };
+  } catch {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function clampUnit(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.max(0, Math.min(1, numeric));
+}
+
+function saveSettings() {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(clientState.settings));
+}
+
+function applySettingsToUi() {
+  if (muteAllToggle) {
+    muteAllToggle.checked = clientState.settings.muted;
+  }
+  if (lowGraphicsToggle) {
+    lowGraphicsToggle.checked = clientState.settings.lowGraphics;
+  }
+  if (masterVolumeInput) {
+    masterVolumeInput.value = Math.round(clientState.settings.masterVolume * 100);
+  }
+  if (musicVolumeInput) {
+    musicVolumeInput.value = Math.round(clientState.settings.musicVolume * 100);
+  }
+  if (sfxVolumeInput) {
+    sfxVolumeInput.value = Math.round(clientState.settings.sfxVolume * 100);
+  }
+  if (masterVolumeValue) {
+    masterVolumeValue.textContent = `${Math.round(clientState.settings.masterVolume * 100)}%`;
+  }
+  if (musicVolumeValue) {
+    musicVolumeValue.textContent = `${Math.round(clientState.settings.musicVolume * 100)}%`;
+  }
+  if (sfxVolumeValue) {
+    sfxVolumeValue.textContent = `${Math.round(clientState.settings.sfxVolume * 100)}%`;
+  }
+}
+
+function isLowGraphics() {
+  return Boolean(clientState.settings.lowGraphics);
+}
+
+function updateAudioMix() {
+  if (!clientState.audio.masterGain || !clientState.audio.musicGain || !clientState.audio.sfxGain) {
+    return;
+  }
+  const ctx = clientState.audio.context;
+  const now = ctx.currentTime;
+  const master = clientState.settings.muted ? 0 : clientState.settings.masterVolume;
+  clientState.audio.masterGain.gain.cancelScheduledValues(now);
+  clientState.audio.musicGain.gain.cancelScheduledValues(now);
+  clientState.audio.sfxGain.gain.cancelScheduledValues(now);
+  clientState.audio.masterGain.gain.setTargetAtTime(master, now, 0.08);
+  clientState.audio.musicGain.gain.setTargetAtTime(clientState.settings.musicVolume, now, 0.12);
+  clientState.audio.sfxGain.gain.setTargetAtTime(clientState.settings.sfxVolume, now, 0.08);
+}
+
+function ensureAudioContext() {
+  const AudioApi = window.AudioContext || window.webkitAudioContext;
+  if (!AudioApi) {
+    return null;
+  }
+
+  if (!clientState.audio.context) {
+    const ctx = new AudioApi();
+    const masterGain = ctx.createGain();
+    const musicGain = ctx.createGain();
+    const sfxGain = ctx.createGain();
+    masterGain.connect(ctx.destination);
+    musicGain.connect(masterGain);
+    sfxGain.connect(masterGain);
+    clientState.audio.context = ctx;
+    clientState.audio.masterGain = masterGain;
+    clientState.audio.musicGain = musicGain;
+    clientState.audio.sfxGain = sfxGain;
+    updateAudioMix();
+    startMusicLoop();
+  }
+
+  if (clientState.audio.context.state === "suspended") {
+    clientState.audio.context.resume().catch(() => {});
+  }
+
+  return clientState.audio.context;
+}
+
+function startMusicLoop() {
+  if (clientState.audio.musicLoopTimer) {
+    return;
+  }
+  queueMusicPhrase();
+  clientState.audio.musicLoopTimer = window.setInterval(queueMusicPhrase, 2600);
+}
+
+function queueMusicPhrase() {
+  const ctx = ensureAudioContext();
+  if (!ctx || !clientState.audio.musicGain) {
+    return;
+  }
+
+  const baseSequence = [220, 261.63, 293.66, 329.63, 293.66, 261.63];
+  const stepOffset = clientState.audio.musicStep % baseSequence.length;
+  const startAt = ctx.currentTime + 0.05;
+  for (let index = 0; index < 4; index += 1) {
+    const frequency = baseSequence[(stepOffset + index) % baseSequence.length];
+    playTone({
+      frequency,
+      duration: 1.6,
+      when: startAt + index * 0.38,
+      gain: 0.035,
+      type: index % 2 === 0 ? "sine" : "triangle",
+      channel: "music",
+      attack: 0.08,
+      release: 0.45
+    });
+  }
+  playTone({
+    frequency: baseSequence[stepOffset] / 2,
+    duration: 2.1,
+    when: startAt,
+    gain: 0.022,
+    type: "sine",
+    channel: "music",
+    attack: 0.12,
+    release: 0.7
+  });
+  clientState.audio.musicStep += 1;
+}
+
+function playTone({
+  frequency = 440,
+  duration = 0.15,
+  when = 0,
+  gain = 0.08,
+  type = "sine",
+  channel = "sfx",
+  attack = 0.01,
+  release = 0.08,
+  detune = 0
+} = {}) {
+  const ctx = ensureAudioContext();
+  if (!ctx) {
+    return;
+  }
+
+  const targetGain = channel === "music" ? clientState.audio.musicGain : clientState.audio.sfxGain;
+  if (!targetGain) {
+    return;
+  }
+
+  const startAt = Math.max(ctx.currentTime, when || ctx.currentTime);
+  const oscillator = ctx.createOscillator();
+  const envelope = ctx.createGain();
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(frequency, startAt);
+  oscillator.detune.setValueAtTime(detune, startAt);
+  envelope.gain.setValueAtTime(0.0001, startAt);
+  envelope.gain.linearRampToValueAtTime(gain, startAt + attack);
+  envelope.gain.exponentialRampToValueAtTime(0.0001, startAt + duration + release);
+  oscillator.connect(envelope);
+  envelope.connect(targetGain);
+  oscillator.start(startAt);
+  oscillator.stop(startAt + duration + release + 0.02);
+}
+
+function playUiClickSound() {
+  if (clientState.settings.muted) {
+    return;
+  }
+  playTone({ frequency: 720, duration: 0.04, gain: 0.07, type: "triangle", attack: 0.004, release: 0.04 });
+  playTone({ frequency: 940, duration: 0.03, gain: 0.04, type: "sine", when: ensureAudioContext()?.currentTime + 0.015 || 0 });
+}
+
+function playEventSound(event) {
+  if (!event || clientState.settings.muted) {
+    return;
+  }
+
+  if (event.type === "hatch") {
+    playTone({ frequency: 480, duration: 0.08, gain: 0.08, type: "triangle" });
+    playTone({ frequency: 660, duration: 0.06, gain: 0.05, type: "sine", when: ensureAudioContext()?.currentTime + 0.03 || 0 });
+    return;
+  }
+  if (event.type === "worker_split") {
+    playTone({ frequency: 540, duration: 0.07, gain: 0.08, type: "square", detune: -60 });
+    playTone({ frequency: 690, duration: 0.07, gain: 0.05, type: "square", detune: 40, when: ensureAudioContext()?.currentTime + 0.02 || 0 });
+    return;
+  }
+  if (event.type === "growth_node") {
+    playTone({ frequency: 360, duration: 0.14, gain: 0.09, type: "triangle", attack: 0.02, release: 0.14 });
+    playTone({ frequency: 540, duration: 0.14, gain: 0.05, type: "sine", when: ensureAudioContext()?.currentTime + 0.05 || 0 });
+    return;
+  }
+  if (event.type === "worker_pickoff") {
+    playTone({ frequency: 220, duration: 0.08, gain: 0.08, type: "sawtooth", release: 0.08 });
+    return;
+  }
+  if (event.type === "colony_down") {
+    playTone({ frequency: 240, duration: 0.22, gain: 0.1, type: "sawtooth", attack: 0.01, release: 0.25, detune: -120 });
+    return;
+  }
+  if (event.type === "card_claimed") {
+    playTone({ frequency: 520, duration: 0.08, gain: 0.08, type: "triangle" });
+    playTone({ frequency: 780, duration: 0.1, gain: 0.06, type: "sine", when: ensureAudioContext()?.currentTime + 0.04 || 0 });
+  }
+}
+
+function processRecentEvents(recentEvents) {
+  if (!Array.isArray(recentEvents) || !recentEvents.length) {
+    return;
+  }
+
+  for (const entry of recentEvents) {
+    const signature = `${entry.type}:${entry.playerId || ""}:${entry.targetPlayerId || ""}:${entry.workerId || ""}:${entry.time || ""}:${entry.rewardLevel || ""}`;
+    if (clientState.audio.processedEventKeys.includes(signature)) {
+      continue;
+    }
+    clientState.audio.processedEventKeys.push(signature);
+    if (clientState.audio.processedEventKeys.length > 80) {
+      clientState.audio.processedEventKeys.splice(0, clientState.audio.processedEventKeys.length - 80);
+    }
+    playEventSound(entry);
+  }
+}
+
+function setSetting(key, value) {
+  if (!(key in clientState.settings)) {
+    return;
+  }
+  clientState.settings[key] = value;
+  saveSettings();
+  applySettingsToUi();
+  updateAudioMix();
+}
+
+function openOptionsMenu() {
+  applySettingsToUi();
+  optionsOverlay?.classList.remove("hidden");
+}
+
+function closeOptionsMenu() {
+  optionsOverlay?.classList.add("hidden");
+}
+
+function isOptionsMenuOpen() {
+  return Boolean(optionsOverlay && !optionsOverlay.classList.contains("hidden"));
 }
 
 function getSkin(skinId) {
@@ -1271,6 +1570,7 @@ async function selectSkin(skinId) {
 
 async function selectCard(cardId, rewardLevel) {
   try {
+    playUiClickSound();
     clientState.cardSelectionPending = true;
     renderCardChoiceOverlay();
     const payload = await apiRequest("/auth/select-card", {
@@ -1391,6 +1691,7 @@ async function logout() {
   clientState.spectatorMode = false;
   clientState.spectatingFromDeath = false;
   clientState.spectatorFocusId = null;
+  closeOptionsMenu();
   setAuthMessage("Signed out.");
   renderAuthState();
 }
@@ -1422,6 +1723,7 @@ function returnToMainMenu() {
   clientState.adminDashboard = null;
   stopAdminDashboardPolling();
   inputState.attack = false;
+  closeOptionsMenu();
   joinOverlay.classList.remove("hidden");
   setStatus("Returned to the main menu. Press Play Now to respawn when you're ready.");
   setAuthMessage("Arena session closed. You can change skins, review cards, or jump back in.");
@@ -1540,23 +1842,28 @@ function sendInput(force = false) {
 function renderBackground() {
   context.clearRect(0, 0, viewport.width, viewport.height);
 
-  const gradient = context.createLinearGradient(0, 0, 0, viewport.height);
-  gradient.addColorStop(0, "#2f275f");
-  gradient.addColorStop(1, "#0f0b24");
-  context.fillStyle = gradient;
+  if (isLowGraphics()) {
+    context.fillStyle = "#171134";
+  } else {
+    const gradient = context.createLinearGradient(0, 0, 0, viewport.height);
+    gradient.addColorStop(0, "#2f275f");
+    gradient.addColorStop(1, "#0f0b24");
+    context.fillStyle = gradient;
+  }
   context.fillRect(0, 0, viewport.width, viewport.height);
 
-  context.strokeStyle = "rgba(255,255,255,0.05)";
+  context.strokeStyle = isLowGraphics() ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.05)";
   context.lineWidth = 1;
+  const gridStep = isLowGraphics() ? 72 : 48;
 
-  for (let x = -48; x < viewport.width + 48; x += 48) {
+  for (let x = -gridStep; x < viewport.width + gridStep; x += gridStep) {
     context.beginPath();
     context.moveTo(x, 0);
     context.lineTo(x, viewport.height);
     context.stroke();
   }
 
-  for (let y = -48; y < viewport.height + 48; y += 48) {
+  for (let y = -gridStep; y < viewport.height + gridStep; y += gridStep) {
     context.beginPath();
     context.moveTo(0, y);
     context.lineTo(viewport.width, y);
@@ -1597,7 +1904,9 @@ function renderGrowthNodes(growthNodes, you) {
       context.strokeStyle = "rgba(255, 209, 102, 0.35)";
       context.lineWidth = Math.max(1, scaleWorld(1.2));
       context.arc(screen.x, screen.y, scaleWorld(node.ringRadius + 6), 0, Math.PI * 2);
-      context.stroke();
+      if (!isLowGraphics()) {
+        context.stroke();
+      }
     }
   }
 }
@@ -1608,7 +1917,7 @@ function renderFoods(foods) {
     context.beginPath();
     context.fillStyle = "#ffd166";
     context.shadowColor = "rgba(255, 209, 102, 0.45)";
-    context.shadowBlur = Math.max(6, scaleWorld(16));
+    context.shadowBlur = isLowGraphics() ? 0 : Math.max(6, scaleWorld(16));
     context.arc(screen.x, screen.y, scaleWorld(food.size), 0, Math.PI * 2);
     context.fill();
     context.shadowBlur = 0;
@@ -1655,13 +1964,15 @@ function renderPlayer(player, isYou) {
     context.strokeStyle = "rgba(255, 244, 170, 0.72)";
     context.lineWidth = Math.max(2, scaleWorld(3));
     context.arc(screen.x, screen.y, radius + scaleWorld(12), 0, Math.PI * 2);
-    context.stroke();
+    if (!isLowGraphics()) {
+      context.stroke();
+    }
   }
 
   context.beginPath();
   context.fillStyle = skin.primary;
   context.shadowColor = isYou ? skin.glow : `${skin.primary}88`;
-  context.shadowBlur = Math.max(8, scaleWorld(isYou ? 28 : 18));
+  context.shadowBlur = isLowGraphics() ? 0 : Math.max(8, scaleWorld(isYou ? 28 : 18));
   context.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
   context.fill();
   context.shadowBlur = 0;
@@ -1706,11 +2017,13 @@ function renderPlayer(player, isYou) {
         ? clientState.worldPointer
         : { x: player.commandX, y: player.commandY };
     const commandScreen = worldToScreen(commandTarget.x, commandTarget.y);
-    context.beginPath();
-    context.strokeStyle = `${skin.secondary}55`;
-    context.lineWidth = Math.max(1, scaleWorld(2));
-    context.arc(screen.x, screen.y, scaleWorld(player.commandRange), 0, Math.PI * 2);
-    context.stroke();
+    if (!isLowGraphics()) {
+      context.beginPath();
+      context.strokeStyle = `${skin.secondary}55`;
+      context.lineWidth = Math.max(1, scaleWorld(2));
+      context.arc(screen.x, screen.y, scaleWorld(player.commandRange), 0, Math.PI * 2);
+      context.stroke();
+    }
 
     context.beginPath();
     context.fillStyle = skin.secondary;
@@ -2029,6 +2342,7 @@ function connectSocket(mode = "player") {
     if (payload.type === "state") {
       recordSnapshotArrival(payload);
       clientState.snapshot = mergeIncomingSnapshot(clientState.snapshot, payload);
+      processRecentEvents(payload.recentEvents);
       clientState.spectatorMode = Boolean(payload.spectator?.active);
       if (payload.spectator?.focusPlayerId && !clientState.spectatingFromDeath) {
         clientState.spectatorFocusId = payload.spectator.focusPlayerId;
@@ -2066,6 +2380,7 @@ function connectSocket(mode = "player") {
     clientState.spectatorMode = false;
     clientState.spectatingFromDeath = false;
     clientState.spectatorFocusId = null;
+    clientState.audio.processedEventKeys = [];
     clientState.lastSentInputSignature = "";
     clientState.lastSentInputAt = 0;
     clientState.adminDashboard = null;
@@ -2087,6 +2402,23 @@ function handleKeyChange(event, isPressed) {
   }
 
   const key = event.key.toLowerCase();
+  if (key === "escape" && isPressed && isOptionsMenuOpen()) {
+    closeOptionsMenu();
+    return;
+  }
+  if (key === "o" && isPressed) {
+    if (isOptionsMenuOpen()) {
+      closeOptionsMenu();
+    } else {
+      openOptionsMenu();
+      ensureAudioContext();
+      playUiClickSound();
+    }
+    return;
+  }
+  if (isOptionsMenuOpen()) {
+    return;
+  }
 
   if (key === "w") {
     inputState.up = isPressed;
@@ -2178,6 +2510,7 @@ cardChoiceGrid.addEventListener("pointerdown", (event) => {
     return;
   }
 
+  ensureAudioContext();
   event.preventDefault();
   event.stopPropagation();
 
@@ -2185,6 +2518,7 @@ cardChoiceGrid.addEventListener("pointerdown", (event) => {
     return;
   }
 
+  playUiClickSound();
   selectCard(button.dataset.cardId, Number(button.dataset.rewardLevel));
 });
 
@@ -2193,36 +2527,134 @@ cardChoiceGrid.addEventListener("click", (event) => {
   event.stopPropagation();
 });
 
+optionsOverlay?.addEventListener("pointerdown", (event) => {
+  event.stopPropagation();
+});
+
+optionsOverlay?.addEventListener("click", (event) => {
+  if (event.target === optionsOverlay) {
+    closeOptionsMenu();
+    return;
+  }
+  event.stopPropagation();
+});
+
 for (const button of authModeButtons) {
   button.addEventListener("click", () => {
+    ensureAudioContext();
+    playUiClickSound();
     switchAuthMode(button.dataset.authMode);
     setAuthMessage("");
   });
 }
 
-guestButton.addEventListener("click", continueAsGuest);
-registerButton.addEventListener("click", registerAccount);
-loginButton.addEventListener("click", loginAccount);
-enterArenaButton.addEventListener("click", joinGame);
-spectateButton.addEventListener("click", startSpectating);
+guestButton.addEventListener("click", () => {
+  ensureAudioContext();
+  playUiClickSound();
+  continueAsGuest();
+});
+registerButton.addEventListener("click", () => {
+  ensureAudioContext();
+  playUiClickSound();
+  registerAccount();
+});
+loginButton.addEventListener("click", () => {
+  ensureAudioContext();
+  playUiClickSound();
+  loginAccount();
+});
+enterArenaButton.addEventListener("click", () => {
+  ensureAudioContext();
+  playUiClickSound();
+  joinGame();
+});
+spectateButton.addEventListener("click", () => {
+  ensureAudioContext();
+  playUiClickSound();
+  startSpectating();
+});
+optionsToggleButton?.addEventListener("click", () => {
+  ensureAudioContext();
+  playUiClickSound();
+  openOptionsMenu();
+});
+openOptionsMenuButton?.addEventListener("click", () => {
+  ensureAudioContext();
+  playUiClickSound();
+  openOptionsMenu();
+});
+closeOptionsButton?.addEventListener("click", () => {
+  playUiClickSound();
+  closeOptionsMenu();
+});
 openAdminDashboardButton?.addEventListener("click", () => {
+  ensureAudioContext();
+  playUiClickSound();
   window.location.href = "/admin";
 });
-logoutButton.addEventListener("click", logout);
-adminRefreshButton?.addEventListener("click", fetchAdminDashboard);
-adminTestBuildButton?.addEventListener("click", () => runAdminAction("apply_test_build"));
-adminGodModeButton?.addEventListener("click", () => runAdminAction("toggle_god_mode"));
-adminHealButton?.addEventListener("click", () => runAdminAction("heal_refill"));
-adminScoreButton?.addEventListener("click", () => runAdminAction("add_score", { amount: 5000 }));
-adminWorkersButton?.addEventListener("click", () => runAdminAction("spawn_workers", { amount: 4 }));
-adminCooldownsButton?.addEventListener("click", () => runAdminAction("reset_cooldowns"));
-adminResetRoundButton?.addEventListener("click", () => runAdminAction("reset_round"));
+logoutButton.addEventListener("click", () => {
+  playUiClickSound();
+  logout();
+});
+adminRefreshButton?.addEventListener("click", () => {
+  playUiClickSound();
+  fetchAdminDashboard();
+});
+adminTestBuildButton?.addEventListener("click", () => {
+  playUiClickSound();
+  runAdminAction("apply_test_build");
+});
+adminGodModeButton?.addEventListener("click", () => {
+  playUiClickSound();
+  runAdminAction("toggle_god_mode");
+});
+adminHealButton?.addEventListener("click", () => {
+  playUiClickSound();
+  runAdminAction("heal_refill");
+});
+adminScoreButton?.addEventListener("click", () => {
+  playUiClickSound();
+  runAdminAction("add_score", { amount: 5000 });
+});
+adminWorkersButton?.addEventListener("click", () => {
+  playUiClickSound();
+  runAdminAction("spawn_workers", { amount: 4 });
+});
+adminCooldownsButton?.addEventListener("click", () => {
+  playUiClickSound();
+  runAdminAction("reset_cooldowns");
+});
+adminResetRoundButton?.addEventListener("click", () => {
+  playUiClickSound();
+  runAdminAction("reset_round");
+});
+muteAllToggle?.addEventListener("change", () => {
+  ensureAudioContext();
+  setSetting("muted", Boolean(muteAllToggle.checked));
+});
+lowGraphicsToggle?.addEventListener("change", () => {
+  playUiClickSound();
+  setSetting("lowGraphics", Boolean(lowGraphicsToggle.checked));
+});
+masterVolumeInput?.addEventListener("input", () => {
+  ensureAudioContext();
+  setSetting("masterVolume", Number(masterVolumeInput.value) / 100);
+});
+musicVolumeInput?.addEventListener("input", () => {
+  ensureAudioContext();
+  setSetting("musicVolume", Number(musicVolumeInput.value) / 100);
+});
+sfxVolumeInput?.addEventListener("input", () => {
+  ensureAudioContext();
+  setSetting("sfxVolume", Number(sfxVolumeInput.value) / 100);
+});
 adminPanel?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-admin-action]");
   if (!button) {
     return;
   }
 
+  playUiClickSound();
   const action = button.dataset.adminAction;
   const extra = {};
   if (button.dataset.playerId) {
@@ -2243,14 +2675,18 @@ window.addEventListener("resize", resizeCanvas);
 window.visualViewport?.addEventListener("resize", resizeCanvas);
 
 canvas.addEventListener("pointermove", (event) => {
+  if (isOptionsMenuOpen()) {
+    return;
+  }
   updatePointerFromEvent(event);
   sendInput(inputState.attack);
 });
 
 canvas.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || !joinOverlay.classList.contains("hidden") || clientState.spectatorMode) {
+  if (event.button !== 0 || !joinOverlay.classList.contains("hidden") || clientState.spectatorMode || isOptionsMenuOpen()) {
     return;
   }
+  ensureAudioContext();
   updatePointerFromEvent(event);
   inputState.attack = true;
   sendInput(true);
@@ -2287,6 +2723,8 @@ canvas.addEventListener("contextmenu", (event) => {
 
 resizeCanvas();
 switchAuthMode("guest");
+applySettingsToUi();
+updateAudioMix();
 renderAuthState();
 restoreSession();
 setInterval(sendInput, INPUT_SEND_INTERVAL_MS);
