@@ -1012,13 +1012,16 @@ function recordSnapshotArrival(payload) {
   const previousAt = clientState.network.lastSnapshotReceivedAt;
   if (previousAt > 0) {
     const interval = now - previousAt;
-    clientState.network.lastSnapshotIntervalMs = interval;
-    const snapshotsPerSecond = interval > 0 ? 1000 / interval : 0;
+    if (interval >= 8) {
+      clientState.network.lastSnapshotIntervalMs = interval;
+    }
+    const targetBroadcastRate = Math.max(1, payload.config?.broadcastRate || 1);
+    const snapshotsPerSecond = interval > 0 ? Math.min(targetBroadcastRate * 1.35, 1000 / interval) : 0;
     clientState.network.snapshotsPerSecond = clientState.network.snapshotsPerSecond
       ? lerp(clientState.network.snapshotsPerSecond, snapshotsPerSecond, 0.28)
       : snapshotsPerSecond;
     const previousInterval = clientState.network.jitterMs;
-    const intervalJitter = Math.abs(interval - (1000 / Math.max(1, payload.config?.broadcastRate || 1)));
+    const intervalJitter = Math.abs(interval - 1000 / targetBroadcastRate);
     clientState.network.jitterMs = previousInterval
       ? lerp(previousInterval, intervalJitter, 0.24)
       : intervalJitter;
