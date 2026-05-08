@@ -94,7 +94,7 @@ const LOGS_DIR = path.join(DATA_DIR, "logs");
 const SERVER_LOG_FILE = path.join(LOGS_DIR, "server.log");
 const AUDIT_LOG_FILE = path.join(LOGS_DIR, "audit.log");
 const ENABLE_STRUCTURED_LOGS = process.env.ENABLE_STRUCTURED_LOGS !== "0";
-const ROOM_IDLE_TTL_MS = 1000 * 60 * 45;
+const ROOM_IDLE_TTL_MS = 1000 * 60;
 const RESOURCE_VIEW_PADDING = 1150;
 const RECENT_EVENTS_INTERVAL = 4;
 const RESOURCE_REFRESH_INTERVAL = 18;
@@ -630,9 +630,6 @@ function roomSummary(roomState) {
 
 function pruneIdleRooms() {
   for (const [roomId, room] of rooms.entries()) {
-    if (room.state.mode !== "custom") {
-      continue;
-    }
     const empty = room.state.players.size === 0 && room.state.spectators.size === 0;
     if (!empty) {
       room.state.lastActiveAt = Date.now();
@@ -642,6 +639,7 @@ function pruneIdleRooms() {
       rooms.delete(roomId);
     }
   }
+  ensurePublicArenaRoom(SERVER_REGION);
 }
 
 function ensureAccountStore() {

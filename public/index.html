@@ -22,8 +22,11 @@
     <main class="game-shell">
       <canvas id="gameCanvas"></canvas>
 
-      <section class="hud hud-bottom-left hud-howto">
+      <section class="hud hud-bottom-left hud-buff-hud">
         <div id="activeBuffs" class="buff-strip hud-buff-strip"></div>
+      </section>
+
+      <section class="hud hud-bottom-left hud-howto">
         <h2>How To Play</h2>
         <div class="controls how-to-play">
           <span><strong>WASD</strong> move your colony core around the map</span>
@@ -36,6 +39,8 @@
         </div>
         <div id="playerStats" class="stat-stack"></div>
       </section>
+
+      <div id="buffTooltip" class="buff-tooltip hidden"></div>
 
       <section class="hud hud-top-right">
         <h2>Leaderboard</h2>

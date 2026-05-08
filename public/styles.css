@@ -166,11 +166,19 @@ button:disabled {
   overflow: auto;
 }
 
+.hud-buff-hud {
+  bottom: 332px;
+  width: min(304px, calc(100vw - 32px));
+  max-height: 96px;
+  overflow: visible;
+  padding: 10px 12px;
+}
+
 .hud-howto {
   width: min(304px, calc(100vw - 32px));
   max-height: min(66vh, 720px);
   padding: 12px 14px;
-  overflow: visible;
+  overflow: auto;
 }
 
 .hud-howto h2 {
@@ -206,6 +214,7 @@ button:disabled {
   justify-content: space-between;
   width: 100%;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .hud-mini-button {
@@ -238,9 +247,9 @@ button:disabled {
 }
 
 .hud-buff-strip {
-  margin: 0 0 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin: 0;
+  max-height: 74px;
+  overflow: visible;
 }
 
 .buff-chip,
@@ -281,36 +290,19 @@ button:disabled {
   display: block;
 }
 
-.buff-chip::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 8px);
-  transform: translateX(-50%);
-  min-width: 150px;
-  max-width: 220px;
+.buff-tooltip {
+  position: fixed;
+  z-index: 40;
+  width: min(240px, calc(100vw - 24px));
   padding: 8px 10px;
   border-radius: 10px;
-  background: rgba(10, 8, 24, 0.96);
+  background: rgba(10, 8, 24, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.14);
   color: var(--text);
   font-size: 0.75rem;
   line-height: 1.35;
   box-shadow: var(--shadow);
-  opacity: 0;
   pointer-events: none;
-  transition: opacity 0.14s ease;
-  z-index: 12;
-}
-
-.hud-buff-strip .buff-chip::after {
-  top: calc(100% + 8px);
-  bottom: auto;
-}
-
-.buff-chip:hover::after,
-.buff-chip:focus-visible::after {
-  opacity: 1;
 }
 
 .buff-chip.uncommon {
@@ -1089,6 +1081,10 @@ button:disabled {
     width: min(300px, calc(50vw - 24px));
   }
 
+  .hud-buff-hud {
+    bottom: 318px;
+  }
+
   .hud-bottom-right {
     min-width: 0;
   }
@@ -1130,6 +1126,11 @@ button:disabled {
     left: 12px;
     bottom: 86px;
     max-height: min(42vh, 420px);
+  }
+
+  .hud-buff-hud {
+    bottom: calc(86px + min(42vh, 420px) + 10px);
+    max-height: 76px;
   }
 
   .hud-bottom-right {

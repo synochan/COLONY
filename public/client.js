@@ -3,6 +3,7 @@ const context = canvas.getContext("2d");
 const statusText = document.getElementById("statusText");
 const playerStats = document.getElementById("playerStats");
 const activeBuffs = document.getElementById("activeBuffs");
+const buffTooltip = document.getElementById("buffTooltip");
 const leaderboard = document.getElementById("leaderboard");
 const joinOverlay = document.getElementById("joinOverlay");
 const networkPanel = document.getElementById("networkPanel");
@@ -2311,6 +2312,38 @@ function renderActiveBuffs(player) {
     .join("");
 }
 
+function showBuffTooltip(button) {
+  if (!buffTooltip || !button) {
+    return;
+  }
+  const text = button.dataset.tooltip || "";
+  if (!text) {
+    hideBuffTooltip();
+    return;
+  }
+  buffTooltip.textContent = text;
+  buffTooltip.classList.remove("hidden");
+  const rect = button.getBoundingClientRect();
+  const tooltipRect = buffTooltip.getBoundingClientRect();
+  const left = Math.min(
+    window.innerWidth - tooltipRect.width - 12,
+    Math.max(12, rect.left + rect.width / 2 - tooltipRect.width / 2)
+  );
+  const top = Math.min(
+    window.innerHeight - tooltipRect.height - 12,
+    Math.max(12, rect.top - tooltipRect.height - 10)
+  );
+  buffTooltip.style.left = `${left}px`;
+  buffTooltip.style.top = `${top}px`;
+}
+
+function hideBuffTooltip() {
+  if (!buffTooltip) {
+    return;
+  }
+  buffTooltip.classList.add("hidden");
+}
+
 function renderOverlay() {
   const you = getYou();
   const round = clientState.snapshot?.round;
@@ -2775,6 +2808,29 @@ cardChoiceGrid.addEventListener("click", (event) => {
   event.preventDefault();
   event.stopPropagation();
 });
+
+activeBuffs?.addEventListener("pointerenter", (event) => {
+  const button = event.target.closest?.(".buff-chip");
+  if (button) {
+    showBuffTooltip(button);
+  }
+}, true);
+
+activeBuffs?.addEventListener("pointermove", (event) => {
+  const button = event.target.closest?.(".buff-chip");
+  if (button) {
+    showBuffTooltip(button);
+  }
+});
+
+activeBuffs?.addEventListener("pointerleave", hideBuffTooltip, true);
+activeBuffs?.addEventListener("focusin", (event) => {
+  const button = event.target.closest?.(".buff-chip");
+  if (button) {
+    showBuffTooltip(button);
+  }
+});
+activeBuffs?.addEventListener("focusout", hideBuffTooltip);
 
 optionsOverlay?.addEventListener("pointerdown", (event) => {
   event.stopPropagation();
