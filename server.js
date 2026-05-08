@@ -9,6 +9,7 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, "data");
+const SERVER_REGION = String(process.env.SERVER_REGION || "singapore").trim().toLowerCase() || "singapore";
 const ACCOUNTS_FILE = path.join(DATA_DIR, "accounts.json");
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
@@ -90,6 +91,7 @@ const LOGS_DIR = path.join(DATA_DIR, "logs");
 const SERVER_LOG_FILE = path.join(LOGS_DIR, "server.log");
 const AUDIT_LOG_FILE = path.join(LOGS_DIR, "audit.log");
 const ENABLE_STRUCTURED_LOGS = process.env.ENABLE_STRUCTURED_LOGS !== "0";
+const ROOM_IDLE_TTL_MS = 1000 * 60 * 45;
 const RESOURCE_VIEW_PADDING = 1150;
 const RECENT_EVENTS_INTERVAL = 4;
 const RESOURCE_REFRESH_INTERVAL = 18;
@@ -369,25 +371,57 @@ const securityResponseHeaders = {
     "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; form-action 'self'"
 };
 
-const state = {
-  players: new Map(),
-  spectators: new Map(),
-  foods: [],
-  growthNodes: [],
-  resourcesVersion: 1,
-  leaderboardVersion: 1,
-  profileVersion: 1,
-  events: [],
-  nextEventId: 1,
-  round: {
-    number: 1,
-    status: "running",
-    winnerPlayerId: null,
-    winnerName: "",
-    reason: "",
-    countdownEndsAt: 0
-  }
-};
+const ROOM_REGIONS = ["singapore", "tokyo", "sydney", "frankfurt", "virginia"];
+
+function roomConfigDefaults() {
+  return {
+    mapWidth: MAP_WIDTH,
+    mapHeight: MAP_HEIGHT,
+    minPlayers: MIN_PLAYERS,
+    maxPlayers: MAX_PLAYERS,
+    foodTarget: FOOD_TARGET,
+    growthNodeTarget: GROWTH_NODE_TARGET,
+    roundScoreTarget: ROUND_SCORE_TARGET,
+    foodValueMultiplier: 1,
+    growthValueMultiplier: 1,
+    hiveDamageMultiplier: 1,
+    workerDamageMultiplier: 1
+  };
+}
+
+function createRoomState(roomId, roomName, region, mode = "matchmaking", config = roomConfigDefaults()) {
+  return {
+    id: roomId,
+    name: roomName,
+    code: roomId,
+    region,
+    mode,
+    config: { ...roomConfigDefaults(), ...config },
+    players: new Map(),
+    spectators: new Map(),
+    foods: [],
+    growthNodes: [],
+    resourcesVersion: 1,
+    leaderboardVersion: 1,
+    profileVersion: 1,
+    events: [],
+    nextEventId: 1,
+    lastActiveAt: Date.now(),
+    round: {
+      number: 1,
+      status: "running",
+      winnerPlayerId: null,
+      winnerName: "",
+      reason: "",
+      countdownEndsAt: 0
+    }
+  };
+}
+
+let state = null;
+const rooms = new Map();
+const playerRoomIndex = new Map();
+const spectatorRoomIndex = new Map();
 
 const sessions = new Map();
 const requestRateLimits = new Map();
@@ -396,6 +430,212 @@ let saveTimer = null;
 let broadcastSequence = 0;
 let accountStore = { accounts: [], bannedGuests: [] };
 let persistence = null;
+
+function currentRoomConfig() {
+  return state?.config || roomConfigDefaults();
+}
+
+function currentMapWidth() {
+  return currentRoomConfig().mapWidth;
+}
+
+function currentMapHeight() {
+  return currentRoomConfig().mapHeight;
+}
+
+function withRoomState(room, callback) {
+  const previousState = state;
+  state = room?.state || room || null;
+  try {
+    return callback();
+  } finally {
+    state = previousState;
+  }
+}
+
+function roomDisplayName(roomState) {
+  if (!roomState) {
+    return "Unknown Room";
+  }
+  return roomState.mode === "custom" ? roomState.name || "Custom Room" : `${roomState.region} Match`;
+}
+
+function normalizeRoomRegion(region) {
+  const normalized = String(region || SERVER_REGION).trim().toLowerCase();
+  return ROOM_REGIONS.includes(normalized) ? normalized : SERVER_REGION;
+}
+
+function clampRoomSetting(value, min, max, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return clamp(Math.round(numeric), min, max);
+}
+
+function clampRoomFactor(value, min, max, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return clamp(numeric, min, max);
+}
+
+function normalizeRoomConfig(rawConfig = {}, custom = false) {
+  const defaults = roomConfigDefaults();
+  const config = {
+    mapWidth: clampRoomSetting(rawConfig.mapWidth, 2800, 12000, defaults.mapWidth),
+    mapHeight: clampRoomSetting(rawConfig.mapHeight, 1800, 7200, defaults.mapHeight),
+    minPlayers: defaults.minPlayers,
+    maxPlayers: clampRoomSetting(rawConfig.maxPlayers, 2, 50, custom ? 16 : defaults.maxPlayers),
+    foodTarget: clampRoomSetting(rawConfig.foodTarget, 80, 1600, custom ? 480 : defaults.foodTarget),
+    growthNodeTarget: clampRoomSetting(rawConfig.growthNodeTarget, 4, 120, custom ? 24 : defaults.growthNodeTarget),
+    roundScoreTarget: clampRoomSetting(rawConfig.roundScoreTarget, 3000, 50000, custom ? 12000 : defaults.roundScoreTarget),
+    foodValueMultiplier: clampRoomFactor(rawConfig.foodValueMultiplier, 0.5, 3, 1),
+    growthValueMultiplier: clampRoomFactor(rawConfig.growthValueMultiplier, 0.5, 3, 1),
+    hiveDamageMultiplier: clampRoomFactor(rawConfig.hiveDamageMultiplier, 0.5, 3, 1),
+    workerDamageMultiplier: clampRoomFactor(rawConfig.workerDamageMultiplier, 0.5, 3, 1)
+  };
+  return config;
+}
+
+function generateRoomId(prefix = "room") {
+  return `${prefix}_${crypto.randomBytes(4).toString("hex")}`;
+}
+
+function createRoom({
+  roomId = generateRoomId("room"),
+  name = "",
+  region = SERVER_REGION,
+  mode = "matchmaking",
+  config = roomConfigDefaults()
+} = {}) {
+  const normalizedRegion = normalizeRoomRegion(region);
+  const normalizedConfig = normalizeRoomConfig(config, mode === "custom");
+  const roomName = mode === "custom" ? String(name || "Custom Colony").slice(0, 28) : `${normalizedRegion} Match`;
+  const roomState = createRoomState(roomId, roomName, normalizedRegion, mode, normalizedConfig);
+  const room = {
+    id: roomId,
+    state: roomState,
+    createdAt: Date.now()
+  };
+  rooms.set(roomId, room);
+  return room;
+}
+
+function getRoomById(roomId) {
+  return roomId ? rooms.get(String(roomId).trim()) || null : null;
+}
+
+function ensureMatchmakingRoom(region = SERVER_REGION) {
+  const normalizedRegion = normalizeRoomRegion(region);
+  const candidates = Array.from(rooms.values())
+    .filter((room) => room.state.mode === "matchmaking" && room.state.region === normalizedRegion)
+    .sort((left, right) => left.state.players.size - right.state.players.size);
+  const room = candidates.find((entry) => entry.state.players.size < entry.state.config.maxPlayers);
+  if (room) {
+    return room;
+  }
+  return createRoom({
+    roomId: generateRoomId(`match_${normalizedRegion}`),
+    region: normalizedRegion,
+    mode: "matchmaking",
+    config: roomConfigDefaults()
+  });
+}
+
+function allRoomStates() {
+  return Array.from(rooms.values()).map((room) => room.state);
+}
+
+function findPlayerRoom(playerId) {
+  const roomId = playerRoomIndex.get(playerId);
+  if (!roomId) {
+    return null;
+  }
+  const room = rooms.get(roomId);
+  if (!room) {
+    playerRoomIndex.delete(playerId);
+    return null;
+  }
+  const player = room.state.players.get(playerId);
+  if (!player) {
+    playerRoomIndex.delete(playerId);
+    return null;
+  }
+  return { room, player };
+}
+
+function findSpectatorRoom(spectatorId) {
+  const roomId = spectatorRoomIndex.get(spectatorId);
+  if (!roomId) {
+    return null;
+  }
+  const room = rooms.get(roomId);
+  if (!room) {
+    spectatorRoomIndex.delete(spectatorId);
+    return null;
+  }
+  const spectator = room.state.spectators.get(spectatorId);
+  if (!spectator) {
+    spectatorRoomIndex.delete(spectatorId);
+    return null;
+  }
+  return { room, spectator };
+}
+
+function findPlayerBySessionToken(sessionToken) {
+  for (const room of rooms.values()) {
+    for (const player of room.state.players.values()) {
+      if (player.sessionToken === sessionToken) {
+        return { room, player };
+      }
+    }
+  }
+  return null;
+}
+
+function allLivePlayers() {
+  const players = [];
+  for (const room of rooms.values()) {
+    for (const player of room.state.players.values()) {
+      players.push({ room, player });
+    }
+  }
+  return players;
+}
+
+function roomSummary(roomState) {
+  return {
+    id: roomState.id,
+    name: roomDisplayName(roomState),
+    region: roomState.region,
+    mode: roomState.mode,
+    players: roomState.players.size,
+    spectators: roomState.spectators.size,
+    config: { ...roomState.config },
+    round: {
+      number: roomState.round.number,
+      status: roomState.round.status
+    }
+  };
+}
+
+function pruneIdleRooms() {
+  for (const [roomId, room] of rooms.entries()) {
+    if (room.state.mode !== "custom") {
+      continue;
+    }
+    const empty = room.state.players.size === 0 && room.state.spectators.size === 0;
+    if (!empty) {
+      room.state.lastActiveAt = Date.now();
+      continue;
+    }
+    if (Date.now() - (room.state.lastActiveAt || 0) >= ROOM_IDLE_TTL_MS) {
+      rooms.delete(roomId);
+    }
+  }
+}
 
 function ensureAccountStore() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -840,7 +1080,7 @@ function workerMaxHealth(worker, owner) {
 
 function workerDamage(worker, owner) {
   const base = 9 + worker.radius * 0.6;
-  return base * (1 + (owner?.buffState?.workerDamageBonusPct || 0));
+  return base * (1 + (owner?.buffState?.workerDamageBonusPct || 0)) * currentRoomConfig().workerDamageMultiplier;
 }
 
 function workerReach(worker, owner) {
@@ -850,7 +1090,7 @@ function workerReach(worker, owner) {
 
 function playerCoreDamage(worker, owner) {
   const base = 7 + worker.radius * 0.36 + scoreFactor(owner.score) * 0.12;
-  return base * (1 + (owner?.buffState?.coreDamageBonusPct || 0));
+  return base * (1 + (owner?.buffState?.coreDamageBonusPct || 0)) * currentRoomConfig().hiveDamageMultiplier;
 }
 
 function attackReachForPlayer(player) {
@@ -886,25 +1126,27 @@ function workerGrowthNodeRequirement(node) {
 }
 
 function spawnFood() {
+  const config = currentRoomConfig();
   return {
     id: createId("food"),
-    x: randomBetween(40, MAP_WIDTH - 40),
-    y: randomBetween(40, MAP_HEIGHT - 40),
+    x: randomBetween(40, config.mapWidth - 40),
+    y: randomBetween(40, config.mapHeight - 40),
     size: randomBetween(5, 11),
-    value: randomBetween(6, 12)
+    value: randomBetween(6, 12) * config.foodValueMultiplier
   };
 }
 
 function spawnGrowthNode() {
   const coreRadius = randomBetween(11, 18);
   const ringRadius = coreRadius + randomBetween(12, 22);
+  const config = currentRoomConfig();
   return {
     id: createId("growth"),
-    x: randomBetween(ringRadius + 30, MAP_WIDTH - ringRadius - 30),
-    y: randomBetween(ringRadius + 30, MAP_HEIGHT - ringRadius - 30),
+    x: randomBetween(ringRadius + 30, config.mapWidth - ringRadius - 30),
+    y: randomBetween(ringRadius + 30, config.mapHeight - ringRadius - 30),
     coreRadius,
     ringRadius,
-    value: randomBetween(110, 180),
+    value: randomBetween(110, 180) * config.growthValueMultiplier,
     requiredRadius: randomBetween(35, 43)
   };
 }
@@ -914,7 +1156,7 @@ function ensureFoodTarget() {
     return;
   }
   let changed = false;
-  while (state.foods.length < FOOD_TARGET) {
+  while (state.foods.length < currentRoomConfig().foodTarget) {
     state.foods.push(spawnFood());
     changed = true;
   }
@@ -928,7 +1170,7 @@ function ensureGrowthNodeTarget() {
     return;
   }
   let changed = false;
-  while (state.growthNodes.length < GROWTH_NODE_TARGET) {
+  while (state.growthNodes.length < currentRoomConfig().growthNodeTarget) {
     state.growthNodes.push(spawnGrowthNode());
     changed = true;
   }
@@ -1213,24 +1455,32 @@ function pruneExpiredSessions() {
     }
   }
 
-  for (const [spectatorId, spectator] of state.spectators.entries()) {
-    if (!sessions.has(spectator.sessionToken)) {
-      try {
-        spectator.socket?.close(4003, "Session expired");
-      } catch {}
-      state.spectators.delete(spectatorId);
+  for (const roomState of allRoomStates()) {
+    for (const [spectatorId, spectator] of roomState.spectators.entries()) {
+      if (!sessions.has(spectator.sessionToken)) {
+        try {
+          spectator.socket?.close(4003, "Session expired");
+        } catch {}
+        roomState.spectators.delete(spectatorId);
+        spectatorRoomIndex.delete(spectatorId);
+      }
     }
   }
+
+  pruneIdleRooms();
 }
 
-function createSpectatorSession(session) {
+function createSpectatorSession(session, roomId) {
+  const room = getRoomById(roomId) || ensureMatchmakingRoom(SERVER_REGION);
   const spectator = {
     id: createId("spectator"),
+    roomId: room.id,
     sessionToken: session.token,
     socket: null,
     createdAt: Date.now()
   };
-  state.spectators.set(spectator.id, spectator);
+  room.state.spectators.set(spectator.id, spectator);
+  spectatorRoomIndex.set(spectator.id, room.id);
   return spectator;
 }
 
@@ -1350,13 +1600,18 @@ function redactedAccountsPreview() {
 }
 
 function adminDashboardPayload() {
-  return {
-    players: Array.from(state.players.values())
-      .map((player) => ({
+  const roomStates = allRoomStates();
+  const players = [];
+  for (const roomState of roomStates) {
+    for (const player of roomState.players.values()) {
+      players.push({
         id: player.id,
         name: player.name,
         accountId: player.accountId || null,
         mode: player.accountId ? "account" : "guest",
+        roomId: roomState.id,
+        roomName: roomDisplayName(roomState),
+        region: roomState.region,
         isAdmin: Boolean(player.isAdmin),
         frozen: Boolean(player.adminFrozen),
         alive: player.alive,
@@ -1367,21 +1622,29 @@ function adminDashboardPayload() {
         healthMax: Math.round(player.healthMax),
         socketBufferedBytes: player.socket?.bufferedAmount || 0,
         sessionToken: player.sessionToken
-      }))
-      .sort((left, right) => right.score - left.score),
+      });
+    }
+  }
+  const totalPlayers = roomStates.reduce((sum, roomState) => sum + roomState.players.size, 0);
+  const totalSpectators = roomStates.reduce((sum, roomState) => sum + roomState.spectators.size, 0);
+  const totalFoods = roomStates.reduce((sum, roomState) => sum + roomState.foods.length, 0);
+  const totalGrowth = roomStates.reduce((sum, roomState) => sum + roomState.growthNodes.length, 0);
+  const totalEvents = roomStates.reduce((sum, roomState) => sum + roomState.events.length, 0);
+  return {
+    players: players.sort((left, right) => right.score - left.score),
     accounts: redactedAccountsPreview(),
     bannedGuests: [...(accountStore.bannedGuests || [])].sort(),
+    rooms: roomStates.map(roomSummary).sort((left, right) => right.players - left.players),
     network: {
       tickRate: TICK_RATE,
       broadcastRate: BROADCAST_RATE,
-      onlinePlayers: state.players.size,
-      spectators: state.spectators.size,
+      onlinePlayers: totalPlayers,
+      spectators: totalSpectators,
       sessions: sessions.size,
-      foods: state.foods.length,
-      growthNodes: state.growthNodes.length,
-      recentEvents: state.events.length,
-      resourcesVersion: state.resourcesVersion,
-      leaderboardVersion: state.leaderboardVersion,
+      rooms: roomStates.length,
+      foods: totalFoods,
+      growthNodes: totalGrowth,
+      recentEvents: totalEvents,
       heapUsedMb: Math.round(process.memoryUsage().heapUsed / (1024 * 1024)),
       rssMb: Math.round(process.memoryUsage().rss / (1024 * 1024)),
       uptimeSec: Math.round(process.uptime())
@@ -1471,6 +1734,31 @@ function applySecurityHeaders(headers = {}) {
     ...securityResponseHeaders,
     ...headers
   };
+}
+
+function publicRoomsPayload() {
+  return allRoomStates()
+    .map((roomState) => ({
+      id: roomState.id,
+      name: roomDisplayName(roomState),
+      region: roomState.region,
+      mode: roomState.mode,
+      players: roomState.players.size,
+      spectators: roomState.spectators.size,
+      roundStatus: roomState.round.status,
+      config: {
+        maxPlayers: roomState.config.maxPlayers,
+        roundScoreTarget: roomState.config.roundScoreTarget,
+        foodTarget: roomState.config.foodTarget,
+        growthNodeTarget: roomState.config.growthNodeTarget
+      }
+    }))
+    .sort((left, right) => {
+      if (left.mode !== right.mode) {
+        return left.mode === "matchmaking" ? -1 : 1;
+      }
+      return right.players - left.players;
+    });
 }
 
 function sendJson(response, statusCode, payload) {
@@ -1681,8 +1969,8 @@ function randomSpawnPoint(radius) {
 
   for (let attempt = 0; attempt < 24; attempt += 1) {
     const point = {
-      x: randomBetween(padding, MAP_WIDTH - padding),
-      y: randomBetween(padding, MAP_HEIGHT - padding)
+      x: randomBetween(padding, currentMapWidth() - padding),
+      y: randomBetween(padding, currentMapHeight() - padding)
     };
 
     let nearestDistance = Infinity;
@@ -1699,7 +1987,7 @@ function randomSpawnPoint(radius) {
     }
   }
 
-  return bestPoint || { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 };
+  return bestPoint || { x: currentMapWidth() / 2, y: currentMapHeight() / 2 };
 }
 
 function createPlayer(identity) {
@@ -1840,8 +2128,8 @@ function serializePlayerForSelf(player) {
 
 function clampPointToMap(point) {
   return {
-    x: clamp(point.x, 0, MAP_WIDTH),
-    y: clamp(point.y, 0, MAP_HEIGHT)
+    x: clamp(point.x, 0, currentMapWidth()),
+    y: clamp(point.y, 0, currentMapHeight())
   };
 }
 
@@ -2074,8 +2362,8 @@ function clampWorkerToCommandRange(player, worker) {
   const direction = normalize(offsetX, offsetY);
   worker.x = player.commandPoint.x + direction.x * maxDistance;
   worker.y = player.commandPoint.y + direction.y * maxDistance;
-  worker.x = clamp(worker.x, worker.radius + 2, MAP_WIDTH - worker.radius - 2);
-  worker.y = clamp(worker.y, worker.radius + 2, MAP_HEIGHT - worker.radius - 2);
+  worker.x = clamp(worker.x, worker.radius + 2, currentMapWidth() - worker.radius - 2);
+  worker.y = clamp(worker.y, worker.radius + 2, currentMapHeight() - worker.radius - 2);
 }
 
 function findClosestCommandScopedFood(player, origin, radius) {
@@ -2236,8 +2524,8 @@ function moveEntity(entity, targetX, targetY, speed, deltaSeconds, padding) {
   entity.y += vector.y * speed * deltaSeconds + (entity.bounceY || 0) * deltaSeconds;
   entity.bounceX = (entity.bounceX || 0) * 0.72;
   entity.bounceY = (entity.bounceY || 0) * 0.72;
-  entity.x = clamp(entity.x, padding, MAP_WIDTH - padding);
-  entity.y = clamp(entity.y, padding, MAP_HEIGHT - padding);
+  entity.x = clamp(entity.x, padding, currentMapWidth() - padding);
+  entity.y = clamp(entity.y, padding, currentMapHeight() - padding);
 }
 
 function distancePointToSegment(pointX, pointY, startX, startY, endX, endY) {
@@ -2513,8 +2801,8 @@ function updatePlayer(player, deltaSeconds) {
 
   player.x += move.x * speed * deltaSeconds + player.knockbackX * deltaSeconds;
   player.y += move.y * speed * deltaSeconds + player.knockbackY * deltaSeconds;
-  player.x = clamp(player.x, player.radius, MAP_WIDTH - player.radius);
-  player.y = clamp(player.y, player.radius, MAP_HEIGHT - player.radius);
+  player.x = clamp(player.x, player.radius, currentMapWidth() - player.radius);
+  player.y = clamp(player.y, player.radius, currentMapHeight() - player.radius);
   player.knockbackX *= 0.48;
   player.knockbackY *= 0.48;
   player.health = clamp(player.health + playerHealthRegen(player) * deltaSeconds, 0, player.healthMax);
@@ -2620,7 +2908,7 @@ function updateGame() {
   }
 
   const topPlayer = Array.from(state.players.values()).sort((left, right) => right.score - left.score)[0];
-  if (topPlayer && topPlayer.score >= ROUND_SCORE_TARGET) {
+  if (topPlayer && topPlayer.score >= currentRoomConfig().roundScoreTarget) {
     endRound(topPlayer, "score_target");
   }
 }
@@ -2799,14 +3087,18 @@ function snapshotForViewer({
     },
     serverTime: Date.now(),
     config: {
-      mapWidth: MAP_WIDTH,
-      mapHeight: MAP_HEIGHT,
-      minPlayers: MIN_PLAYERS,
-      maxPlayers: MAX_PLAYERS,
-      roundScoreTarget: ROUND_SCORE_TARGET,
+      mapWidth: currentRoomConfig().mapWidth,
+      mapHeight: currentRoomConfig().mapHeight,
+      minPlayers: currentRoomConfig().minPlayers,
+      maxPlayers: currentRoomConfig().maxPlayers,
+      roundScoreTarget: currentRoomConfig().roundScoreTarget,
       tickRate: TICK_RATE,
       broadcastRate: BROADCAST_RATE,
-      onlinePlayers: state.players.size
+      onlinePlayers: state.players.size,
+      roomId: state.id,
+      roomName: roomDisplayName(state),
+      roomRegion: state.region,
+      roomMode: state.mode
     },
     players,
     recentEvents: broadcastSequence % RECENT_EVENTS_INTERVAL === 0 ? state.events.slice(-8) : undefined,
@@ -3040,7 +3332,8 @@ function handleAdminAction(request, response, payload) {
     return;
   }
 
-  const player = Array.from(state.players.values()).find((entry) => entry.sessionToken === admin.session.token);
+  const adminRecord = findPlayerBySessionToken(admin.session.token);
+  const player = adminRecord?.player || null;
   const adminActorName = player?.name || admin.account.username || "admin";
   const requireLiveAdminPlayer = () => {
     if (player) {
@@ -3056,18 +3349,25 @@ function handleAdminAction(request, response, payload) {
   const targetGuestName = String(payload.targetGuestName || "");
   const requestedAmount = Number(payload.amount) || 0;
 
-  const findTargetPlayer = () => Array.from(state.players.values()).find((entry) => entry.id === targetPlayerId);
+  const findTargetPlayer = () => findPlayerRoom(targetPlayerId);
   const kickPlayer = (targetPlayer, reason = "Kicked by admin") => {
     if (!targetPlayer || targetPlayer.isAdmin) {
+      return false;
+    }
+    const targetRecord = findPlayerRoom(targetPlayer.id);
+    if (!targetRecord) {
       return false;
     }
     try {
       targetPlayer.socket?.close(4001, reason);
     } catch {}
-    if (state.players.has(targetPlayer.id)) {
-      state.players.delete(targetPlayer.id);
-      bumpLeaderboardVersion();
-      pushEvent("admin_kick", { admin: adminActorName, target: targetPlayer.name });
+    if (targetRecord.room.state.players.has(targetPlayer.id)) {
+      targetRecord.room.state.players.delete(targetPlayer.id);
+      playerRoomIndex.delete(targetPlayer.id);
+      withRoomState(targetRecord.room, () => {
+        bumpLeaderboardVersion();
+        pushEvent("admin_kick", { admin: adminActorName, target: targetPlayer.name });
+      });
     }
     return true;
   };
@@ -3085,12 +3385,14 @@ function handleAdminAction(request, response, payload) {
         sessions.delete(token);
       }
     }
-    for (const targetPlayer of Array.from(state.players.values())) {
+    for (const { player: targetPlayer } of allLivePlayers()) {
       if (targetPlayer.accountId === account.id) {
         kickPlayer(targetPlayer, "Banned by admin");
       }
     }
-    pushEvent("admin_ban", { admin: adminActorName, target: account.username });
+    if (adminRecord?.room) {
+      withRoomState(adminRecord.room, () => pushEvent("admin_ban", { admin: adminActorName, target: account.username }));
+    }
     return true;
   };
 
@@ -3109,12 +3411,14 @@ function handleAdminAction(request, response, payload) {
         sessions.delete(token);
       }
     }
-    for (const targetPlayer of Array.from(state.players.values())) {
+    for (const { player: targetPlayer } of allLivePlayers()) {
       if (!targetPlayer.accountId && normalizeGuestName(targetPlayer.name) === normalized) {
         kickPlayer(targetPlayer, "Guest banned by admin");
       }
     }
-    pushEvent("admin_ban_guest", { admin: adminActorName, target: normalized });
+    if (adminRecord?.room) {
+      withRoomState(adminRecord.room, () => pushEvent("admin_ban_guest", { admin: adminActorName, target: normalized }));
+    }
     return true;
   };
 
@@ -3126,7 +3430,9 @@ function handleAdminAction(request, response, payload) {
     delete account.bannedAt;
     delete account.banReason;
     scheduleAccountSave();
-    pushEvent("admin_unban", { admin: adminActorName, target: account.username });
+    if (adminRecord?.room) {
+      withRoomState(adminRecord.room, () => pushEvent("admin_unban", { admin: adminActorName, target: account.username }));
+    }
     return true;
   };
 
@@ -3136,7 +3442,9 @@ function handleAdminAction(request, response, payload) {
     accountStore.bannedGuests = (accountStore.bannedGuests || []).filter((entry) => entry !== normalized);
     if (accountStore.bannedGuests.length !== before) {
       scheduleAccountSave();
-      pushEvent("admin_unban_guest", { admin: adminActorName, target: normalized });
+      if (adminRecord?.room) {
+        withRoomState(adminRecord.room, () => pushEvent("admin_unban_guest", { admin: adminActorName, target: normalized }));
+      }
       return true;
     }
     return false;
@@ -3155,14 +3463,16 @@ function handleAdminAction(request, response, payload) {
         changed = true;
       }
     }
-    for (const targetPlayer of Array.from(state.players.values())) {
+    for (const { player: targetPlayer } of allLivePlayers()) {
       if (targetPlayer.accountId === account.id) {
         kickPlayer(targetPlayer, "Account sessions cleared by admin");
         changed = true;
       }
     }
     if (changed) {
-      pushEvent("admin_kick_account", { admin: adminActorName, target: account.username });
+      if (adminRecord?.room) {
+        withRoomState(adminRecord.room, () => pushEvent("admin_kick_account", { admin: adminActorName, target: account.username }));
+      }
     }
     return changed;
   };
@@ -3180,14 +3490,16 @@ function handleAdminAction(request, response, payload) {
         changed = true;
       }
     }
-    for (const targetPlayer of Array.from(state.players.values())) {
+    for (const { player: targetPlayer } of allLivePlayers()) {
       if (!targetPlayer.accountId && normalizeGuestName(targetPlayer.name) === normalized) {
         kickPlayer(targetPlayer, "Guest sessions cleared by admin");
         changed = true;
       }
     }
     if (changed) {
-      pushEvent("admin_kick_guest", { admin: adminActorName, target: normalized });
+      if (adminRecord?.room) {
+        withRoomState(adminRecord.room, () => pushEvent("admin_kick_guest", { admin: adminActorName, target: normalized }));
+      }
     }
     return changed;
   };
@@ -3203,34 +3515,38 @@ function handleAdminAction(request, response, payload) {
     if (!liveAdminPlayer) {
       return;
     }
-    applyAdminLoadout(liveAdminPlayer, { score: ADMIN_STARTING_SCORE });
+    withRoomState(adminRecord.room, () => applyAdminLoadout(liveAdminPlayer, { score: ADMIN_STARTING_SCORE }));
   } else if (action === "heal_refill") {
     const liveAdminPlayer = requireLiveAdminPlayer();
     if (!liveAdminPlayer) {
       return;
     }
-    refreshPlayerDerivedStats(liveAdminPlayer);
-    liveAdminPlayer.health = liveAdminPlayer.healthMax;
-    liveAdminPlayer.eggs = liveAdminPlayer.maxEggs;
-    for (const worker of liveAdminPlayer.workers) {
-      worker.health = worker.healthMax;
-    }
+    withRoomState(adminRecord.room, () => {
+      refreshPlayerDerivedStats(liveAdminPlayer);
+      liveAdminPlayer.health = liveAdminPlayer.healthMax;
+      liveAdminPlayer.eggs = liveAdminPlayer.maxEggs;
+      for (const worker of liveAdminPlayer.workers) {
+        worker.health = worker.healthMax;
+      }
+    });
   } else if (action === "add_score") {
     const liveAdminPlayer = requireLiveAdminPlayer();
     if (!liveAdminPlayer) {
       return;
     }
-    grantScore(liveAdminPlayer, Number(payload.amount) || 5000);
+    withRoomState(adminRecord.room, () => grantScore(liveAdminPlayer, Number(payload.amount) || 5000));
   } else if (action === "spawn_workers") {
     const liveAdminPlayer = requireLiveAdminPlayer();
     if (!liveAdminPlayer) {
       return;
     }
     const spawnCount = clamp(Number(payload.amount) || 4, 1, 12);
-    for (let index = 0; index < spawnCount && liveAdminPlayer.workers.length < liveAdminPlayer.maxWorkers; index += 1) {
-      liveAdminPlayer.workers.push(createWorker(liveAdminPlayer));
-    }
-    applyAdminLoadout(liveAdminPlayer, { score: liveAdminPlayer.score });
+    withRoomState(adminRecord.room, () => {
+      for (let index = 0; index < spawnCount && liveAdminPlayer.workers.length < liveAdminPlayer.maxWorkers; index += 1) {
+        liveAdminPlayer.workers.push(createWorker(liveAdminPlayer));
+      }
+      applyAdminLoadout(liveAdminPlayer, { score: liveAdminPlayer.score });
+    });
   } else if (action === "reset_cooldowns") {
     const liveAdminPlayer = requireLiveAdminPlayer();
     if (!liveAdminPlayer) {
@@ -3239,13 +3555,14 @@ function handleAdminAction(request, response, payload) {
     liveAdminPlayer.mergeCooldownUntil = 0;
     liveAdminPlayer.splitCooldownUntil = 0;
   } else if (action === "kick_player") {
-    if (!kickPlayer(findTargetPlayer())) {
+    if (!kickPlayer(findTargetPlayer()?.player)) {
       sendJson(response, 400, { error: "Unable to kick that player." });
       return;
     }
   } else if (action === "freeze_player") {
-    const targetPlayer = findTargetPlayer();
-    if (!targetPlayer || targetPlayer.isAdmin) {
+    const targetRecord = findTargetPlayer();
+    const targetPlayer = targetRecord?.player;
+    if (!targetPlayer || targetPlayer.isAdmin || !targetRecord?.room) {
       sendJson(response, 400, { error: "Unable to freeze that player." });
       return;
     }
@@ -3265,10 +3582,11 @@ function handleAdminAction(request, response, payload) {
         pointerY: targetPlayer.y
       };
     }
-    pushEvent("admin_freeze", { admin: adminActorName, target: targetPlayer.name, frozen: targetPlayer.adminFrozen });
+    withRoomState(targetRecord.room, () => pushEvent("admin_freeze", { admin: adminActorName, target: targetPlayer.name, frozen: targetPlayer.adminFrozen }));
   } else if (action === "heal_player") {
-    const targetPlayer = findTargetPlayer();
-    if (!targetPlayer) {
+    const targetRecord = findTargetPlayer();
+    const targetPlayer = targetRecord?.player;
+    if (!targetPlayer || !targetRecord?.room) {
       sendJson(response, 404, { error: "Player not found." });
       return;
     }
@@ -3277,18 +3595,21 @@ function handleAdminAction(request, response, payload) {
     for (const worker of targetPlayer.workers) {
       worker.health = worker.healthMax;
     }
-    pushEvent("admin_heal", { admin: adminActorName, target: targetPlayer.name });
+    withRoomState(targetRecord.room, () => pushEvent("admin_heal", { admin: adminActorName, target: targetPlayer.name }));
   } else if (action === "grant_score_player") {
-    const targetPlayer = findTargetPlayer();
-    if (!targetPlayer) {
+    const targetRecord = findTargetPlayer();
+    const targetPlayer = targetRecord?.player;
+    if (!targetPlayer || !targetRecord?.room) {
       sendJson(response, 404, { error: "Player not found." });
       return;
     }
     const amount = clamp(requestedAmount || 2000, 100, 10000);
-    grantScore(targetPlayer, amount);
-    pushEvent("admin_score", { admin: adminActorName, target: targetPlayer.name, amount });
+    withRoomState(targetRecord.room, () => {
+      grantScore(targetPlayer, amount);
+      pushEvent("admin_score", { admin: adminActorName, target: targetPlayer.name, amount });
+    });
   } else if (action === "ban_player") {
-    const targetPlayer = findTargetPlayer();
+    const targetPlayer = findTargetPlayer()?.player;
     if (!targetPlayer) {
       sendJson(response, 404, { error: "Player not found." });
       return;
@@ -3333,15 +3654,17 @@ function handleAdminAction(request, response, payload) {
       return;
     }
   } else if (action === "respawn_player") {
-    const targetPlayer = findTargetPlayer();
-    if (!targetPlayer || targetPlayer.isAdmin) {
+    const targetRecord = findTargetPlayer();
+    const targetPlayer = targetRecord?.player;
+    if (!targetPlayer || targetPlayer.isAdmin || !targetRecord?.room) {
       sendJson(response, 400, { error: "Unable to respawn that player." });
       return;
     }
-    resetPlayer(targetPlayer);
+    withRoomState(targetRecord.room, () => resetPlayer(targetPlayer));
   } else if (action === "kill_player") {
-    const targetPlayer = findTargetPlayer();
-    if (!targetPlayer || targetPlayer.isAdmin) {
+    const targetRecord = findTargetPlayer();
+    const targetPlayer = targetRecord?.player;
+    if (!targetPlayer || targetPlayer.isAdmin || !targetRecord?.room) {
       sendJson(response, 400, { error: "Unable to collapse that player." });
       return;
     }
@@ -3350,10 +3673,13 @@ function handleAdminAction(request, response, payload) {
     targetPlayer.respawnTimer = 3;
     targetPlayer.workers = [];
     targetPlayer.score = Math.max(0, targetPlayer.score * 0.65);
-    bumpLeaderboardVersion();
-    pushEvent("admin_collapse", { admin: adminActorName, target: targetPlayer.name });
+    withRoomState(targetRecord.room, () => {
+      bumpLeaderboardVersion();
+      pushEvent("admin_collapse", { admin: adminActorName, target: targetPlayer.name });
+    });
   } else if (action === "reset_round") {
-    startNextRound();
+    const targetRoom = adminRecord?.room || ensureMatchmakingRoom(SERVER_REGION);
+    withRoomState(targetRoom, () => startNextRound());
   } else {
     sendJson(response, 400, { error: "Unknown admin action." });
     return;
@@ -3430,8 +3756,9 @@ function handleSelectCard(request, response, payload) {
 
   const rewardLevel = Number(payload.rewardLevel);
   const cardId = String(payload.cardId || "");
-  const player = Array.from(state.players.values()).find((entry) => entry.sessionToken === session.token);
-  if (!player) {
+  const resolved = findPlayerBySessionToken(session.token);
+  const player = resolved?.player;
+  if (!player || !resolved?.room) {
     sendJson(response, 409, { error: "Join the arena first to choose a hive card." });
     return;
   }
@@ -3451,11 +3778,13 @@ function handleSelectCard(request, response, payload) {
   player.pendingCardChoices.splice(choiceIndex, 1);
   player.claimedCardRewardLevels.push(rewardLevel);
   player.activeCardIds.push(cardId);
-  syncPlayerBuffsFromAccount(player);
-  pushEvent("card_claimed", {
-    player: player.name,
-    card: CARD_LIBRARY[cardId]?.title || cardId,
-    rewardLevel
+  withRoomState(resolved.room, () => {
+    syncPlayerBuffsFromAccount(player);
+    pushEvent("card_claimed", {
+      player: player.name,
+      card: CARD_LIBRARY[cardId]?.title || cardId,
+      rewardLevel
+    });
   });
 
   sendJson(response, 200, {
@@ -3477,6 +3806,25 @@ function handleLogout(request, response, payload) {
   sendJson(response, 200, { ok: true });
 }
 
+function resolveRequestedRoom(payload = {}) {
+  const roomMode = String(payload.roomMode || "matchmaking").trim().toLowerCase();
+  const roomRegion = normalizeRoomRegion(payload.roomRegion || SERVER_REGION);
+  if (roomMode === "custom") {
+    const requestedRoom = getRoomById(payload.roomId);
+    if (requestedRoom) {
+      return requestedRoom;
+    }
+    return createRoom({
+      roomId: generateRoomId("custom"),
+      name: payload.roomName,
+      region: roomRegion,
+      mode: "custom",
+      config: payload.roomConfig || {}
+    });
+  }
+  return ensureMatchmakingRoom(roomRegion);
+}
+
 function handleJoin(request, response, payload) {
   const session = resolveSession(request, payload);
 
@@ -3488,14 +3836,19 @@ function handleJoin(request, response, payload) {
     return;
   }
 
-  if (state.players.size >= MAX_PLAYERS) {
-    sendJson(response, 409, { error: `Room is full. Colony.io supports up to ${MAX_PLAYERS} concurrent players.` });
-    return;
+  for (const roomState of allRoomStates()) {
+    const existingPlayer = Array.from(roomState.players.values()).find((player) => player.sessionToken === session.token);
+    if (existingPlayer) {
+      sendJson(response, 409, {
+        error: `This profile is already in ${roomDisplayName(roomState)}. Return to that session or leave it first.`
+      });
+      return;
+    }
   }
 
-  const existingPlayer = Array.from(state.players.values()).find((player) => player.sessionToken === session.token);
-  if (existingPlayer) {
-    sendJson(response, 409, { error: "This profile is already in the arena. Return to that session or leave it first." });
+  const room = resolveRequestedRoom(payload);
+  if (room.state.players.size >= room.state.config.maxPlayers) {
+    sendJson(response, 409, { error: `${roomDisplayName(room.state)} is full.` });
     return;
   }
 
@@ -3510,17 +3863,21 @@ function handleJoin(request, response, payload) {
     return;
   }
 
-  const player = createPlayer({
-    displayName: profile.displayName,
-    selectedSkin: profile.selectedSkin,
-    mode: profile.mode,
-    sessionToken: session.token,
-    accountId: session.mode === "account" ? session.accountId : null,
-    isAdmin: Boolean(profile.isAdmin)
-  });
-
-  state.players.set(player.id, player);
-  bumpLeaderboardVersion();
+  const player = withRoomState(room, () =>
+    createPlayer({
+      displayName: profile.displayName,
+      selectedSkin: profile.selectedSkin,
+      mode: profile.mode,
+      sessionToken: session.token,
+      accountId: session.mode === "account" ? session.accountId : null,
+      isAdmin: Boolean(profile.isAdmin)
+    })
+  );
+  player.roomId = room.id;
+  room.state.players.set(player.id, player);
+  playerRoomIndex.set(player.id, room.id);
+  room.state.lastActiveAt = Date.now();
+  withRoomState(room, () => bumpLeaderboardVersion());
   if (player.accountId) {
     incrementAccountStat(player, "totalMatches");
   }
@@ -3528,12 +3885,20 @@ function handleJoin(request, response, payload) {
   sendJson(response, 200, {
     playerId: player.id,
     message: "Joined Colony.io",
+    room: roomSummary(room.state),
     profile: buildProfileForSession(session),
     ...sessionResponse(session)
   });
 
-  auditLog("arena.join", { playerId: player.id, name: player.name, mode: session.mode, ip: clientIpForRequest(request) });
-  pushEvent("join", { playerId: player.id, name: player.name });
+  auditLog("arena.join", {
+    playerId: player.id,
+    name: player.name,
+    mode: session.mode,
+    roomId: room.id,
+    roomName: roomDisplayName(room.state),
+    ip: clientIpForRequest(request)
+  });
+  withRoomState(room, () => pushEvent("join", { playerId: player.id, name: player.name }));
 }
 
 function handleSpectate(request, response, payload) {
@@ -3558,14 +3923,23 @@ function handleSpectate(request, response, payload) {
     return;
   }
 
-  const spectator = createSpectatorSession(session);
+  const room = resolveRequestedRoom(payload);
+  const spectator = createSpectatorSession(session, room.id);
+  room.state.lastActiveAt = Date.now();
   sendJson(response, 200, {
     spectatorId: spectator.id,
     message: "Spectating Colony.io",
+    room: roomSummary(room.state),
     profile,
     ...sessionResponse(session)
   });
-  auditLog("arena.spectate", { spectatorId: spectator.id, mode: session.mode, ip: clientIpForRequest(request) });
+  auditLog("arena.spectate", {
+    spectatorId: spectator.id,
+    mode: session.mode,
+    roomId: room.id,
+    roomName: roomDisplayName(room.state),
+    ip: clientIpForRequest(request)
+  });
 }
 
 function serveFile(filePath, response) {
@@ -3594,12 +3968,23 @@ const server = http.createServer(async (request, response) => {
   const requestIp = clientIpForRequest(request);
 
   if (request.method === "GET" && requestUrl.pathname === "/healthz") {
+    const roomStates = allRoomStates();
     sendJson(response, isShuttingDown ? 503 : 200, {
       ok: !isShuttingDown,
       shuttingDown: isShuttingDown,
-      players: state.players.size,
-      spectators: state.spectators.size,
-      round: state.round.status
+      players: roomStates.reduce((sum, roomState) => sum + roomState.players.size, 0),
+      spectators: roomStates.reduce((sum, roomState) => sum + roomState.spectators.size, 0),
+      rooms: roomStates.length,
+      region: SERVER_REGION
+    });
+    return;
+  }
+
+  if (request.method === "GET" && requestUrl.pathname === "/rooms") {
+    sendJson(response, 200, {
+      serverRegion: SERVER_REGION,
+      supportedRegions: ROOM_REGIONS,
+      rooms: publicRoomsPayload()
     });
     return;
   }
@@ -3749,9 +4134,11 @@ webSocketServer.on("connection", (socket, request) => {
   const spectatorId = requestUrl.searchParams.get("spectatorId");
 
   if (spectatorId) {
-    const spectator = state.spectators.get(spectatorId);
+    const resolved = findSpectatorRoom(spectatorId);
+    const spectator = resolved?.spectator;
+    const room = resolved?.room;
 
-    if (!spectator) {
+    if (!spectator || !room) {
       socket.close(1008, "Unknown spectator");
       return;
     }
@@ -3764,9 +4151,7 @@ webSocketServer.on("connection", (socket, request) => {
     spectator.socket = socket;
     spectator.netState = { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
     socket.send(JSON.stringify({ type: "welcome", spectatorId: spectator.id, spectating: true }));
-    socket.send(
-      JSON.stringify(snapshotForViewer({ sessionToken: spectator.sessionToken, spectatorMode: true, viewerState: spectator.netState }))
-    );
+    socket.send(JSON.stringify(withRoomState(room, () => snapshotForViewer({ sessionToken: spectator.sessionToken, spectatorMode: true, viewerState: spectator.netState }))));
 
     socket.on("message", (rawMessage) => {
       const now = Date.now();
@@ -3796,8 +4181,9 @@ webSocketServer.on("connection", (socket, request) => {
     });
 
     socket.on("close", () => {
-      if (state.spectators.get(spectator.id)?.socket === socket) {
-        state.spectators.delete(spectator.id);
+      if (room.state.spectators.get(spectator.id)?.socket === socket) {
+        room.state.spectators.delete(spectator.id);
+        spectatorRoomIndex.delete(spectator.id);
       }
       logStructured("info", "socket.spectator.closed", { spectatorId: spectator.id });
     });
@@ -3807,9 +4193,11 @@ webSocketServer.on("connection", (socket, request) => {
     return;
   }
 
-  const player = state.players.get(playerId);
+  const resolved = findPlayerRoom(playerId);
+  const player = resolved?.player;
+  const room = resolved?.room;
 
-  if (!player) {
+  if (!player || !room) {
     socket.close(1008, "Unknown player");
     return;
   }
@@ -3822,7 +4210,7 @@ webSocketServer.on("connection", (socket, request) => {
   player.socket = socket;
   player.netState = { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
   socket.send(JSON.stringify({ type: "welcome", playerId: player.id, name: player.name }));
-  socket.send(JSON.stringify(snapshotForViewer({ playerId: player.id, viewerState: player.netState })));
+  socket.send(JSON.stringify(withRoomState(room, () => snapshotForViewer({ playerId: player.id, viewerState: player.netState }))));
 
   socket.on("message", (rawMessage) => {
     const now = Date.now();
@@ -3874,10 +4262,14 @@ webSocketServer.on("connection", (socket, request) => {
 
   socket.on("close", (code, reasonBuffer) => {
     const reason = String(reasonBuffer || "");
-    if (state.players.has(player.id) && state.players.get(player.id)?.socket === socket) {
-      state.players.delete(player.id);
-      bumpLeaderboardVersion();
-      pushEvent("leave", { playerId: player.id, name: player.name });
+    if (room.state.players.has(player.id) && room.state.players.get(player.id)?.socket === socket) {
+      room.state.players.delete(player.id);
+      playerRoomIndex.delete(player.id);
+      room.state.lastActiveAt = Date.now();
+      withRoomState(room, () => {
+        bumpLeaderboardVersion();
+        pushEvent("leave", { playerId: player.id, name: player.name });
+      });
     }
     logStructured("info", "socket.player.closed", { playerId: player.id, code, reason });
   });
@@ -3886,8 +4278,16 @@ webSocketServer.on("connection", (socket, request) => {
   });
 });
 
-setInterval(updateGame, 1000 / TICK_RATE);
-setInterval(broadcastGameState, 1000 / BROADCAST_RATE);
+setInterval(() => {
+  for (const room of rooms.values()) {
+    withRoomState(room, () => updateGame());
+  }
+}, 1000 / TICK_RATE);
+setInterval(() => {
+  for (const room of rooms.values()) {
+    withRoomState(room, () => broadcastGameState());
+  }
+}, 1000 / BROADCAST_RATE);
 setInterval(pruneExpiredSessions, SESSION_CLEANUP_INTERVAL_MS).unref();
 
 async function shutdownGracefully(signal) {
@@ -3902,16 +4302,18 @@ async function shutdownGracefully(signal) {
     logStructured("error", "shutdown.flush.failed", { signal, message: error.message });
   }
 
-  for (const player of state.players.values()) {
-    try {
-      player.socket?.close(1001, "Server shutting down");
-    } catch {}
-  }
+  for (const roomState of allRoomStates()) {
+    for (const player of roomState.players.values()) {
+      try {
+        player.socket?.close(1001, "Server shutting down");
+      } catch {}
+    }
 
-  for (const spectator of state.spectators.values()) {
-    try {
-      spectator.socket?.close(1001, "Server shutting down");
-    } catch {}
+    for (const spectator of roomState.spectators.values()) {
+      try {
+        spectator.socket?.close(1001, "Server shutting down");
+      } catch {}
+    }
   }
 
   server.close(() => {
@@ -3928,13 +4330,19 @@ process.on("SIGINT", () => shutdownGracefully("SIGINT"));
 
 async function bootstrap() {
   await initializePersistence();
+  ensureMatchmakingRoom(SERVER_REGION);
   for (const account of accountStore.accounts) {
     applyLevelUnlocks(account);
   }
   ensureAdminAccount();
   scheduleAccountSave();
   server.listen(PORT, () => {
-    logStructured("info", "server.started", { port: PORT, persistence: persistence?.mode || "json" });
+    logStructured("info", "server.started", {
+      port: PORT,
+      persistence: persistence?.mode || "json",
+      region: SERVER_REGION,
+      rooms: rooms.size
+    });
   });
 }
 
