@@ -76,4 +76,4 @@ The server exposes build metadata through `/version`, `/healthz`, `/rooms`, and 
 - Set `DEPLOY_CHANNEL=development` or `DEPLOY_CHANNEL=production` when you want explicit branch-based labels.
 - Railway commit hashes are appended automatically when `RAILWAY_GIT_COMMIT_SHA` is available.
 
-If you want the full system write-up covering architecture, PDC concepts, performance evidence, and design rationale, see [Details.md](./Details.md).
+If you want the full system write-up covering architecture, PDC concepts, performance evidence, and design rationale, see [Details.md](./Details.md). For defense-focused learning notes with "how and why" explanations, see [PDC-Learning-Materials.md](./PDC-Learning-Materials.md).
