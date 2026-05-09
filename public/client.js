@@ -2173,6 +2173,19 @@ function renderWorker(player, worker, skin, coreScreen) {
   context.strokeStyle = skin.primary;
   context.lineWidth = Math.max(1, scaleWorld(2));
   context.stroke();
+
+  const healthRatio = worker.healthMax > 0 ? Math.max(0, Math.min(1, worker.health / worker.healthMax)) : 0;
+  const barWidth = Math.max(18, Math.min(42, radius * 2.35));
+  const barHeight = Math.max(3, scaleWorld(4));
+  const barX = screen.x - barWidth / 2;
+  const barY = screen.y + radius + Math.max(5, scaleWorld(7));
+  context.fillStyle = "rgba(10, 8, 25, 0.78)";
+  context.fillRect(barX, barY, barWidth, barHeight);
+  context.fillStyle = healthRatio > 0.45 ? "#7df7b0" : healthRatio > 0.22 ? "#ffd166" : "#ff6b7a";
+  context.fillRect(barX, barY, barWidth * healthRatio, barHeight);
+  context.strokeStyle = "rgba(255, 255, 255, 0.18)";
+  context.lineWidth = 1;
+  context.strokeRect(barX, barY, barWidth, barHeight);
 }
 
 function renderPlayer(player, isYou) {
