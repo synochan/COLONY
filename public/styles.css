@@ -170,9 +170,9 @@ button:disabled {
   top: 16px;
   left: 16px;
   bottom: auto;
-  width: min(304px, calc(100vw - 32px));
-  max-height: 96px;
-  overflow: visible;
+  width: min(360px, calc(100vw - 32px));
+  max-height: 92px;
+  overflow: hidden;
   padding: 10px 12px;
 }
 
@@ -251,8 +251,27 @@ button:disabled {
 
 .hud-buff-strip {
   margin: 0;
-  max-height: 74px;
-  overflow: visible;
+  max-height: 72px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-wrap: nowrap;
+  align-items: center;
+  padding: 0 2px 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 209, 102, 0.44) transparent;
+}
+
+.hud-buff-strip::-webkit-scrollbar {
+  height: 5px;
+}
+
+.hud-buff-strip::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hud-buff-strip::-webkit-scrollbar-thumb {
+  background: rgba(255, 209, 102, 0.44);
+  border-radius: 999px;
 }
 
 .buff-chip,
@@ -262,8 +281,8 @@ button:disabled {
   align-items: center;
   justify-content: center;
   border-radius: 12px;
-  min-width: 42px;
-  min-height: 58px;
+  min-width: 40px;
+  min-height: 54px;
   padding: 4px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -287,8 +306,8 @@ button:disabled {
 }
 
 .buff-chip img {
-  width: 34px;
-  height: 48px;
+  width: 31px;
+  height: 44px;
   border-radius: 8px;
   display: block;
 }
@@ -1173,6 +1192,7 @@ button:disabled {
     top: 12px;
     left: 12px;
     bottom: auto;
+    width: min(320px, calc(100vw - 24px));
   }
 
   .hud-bottom-right {
@@ -1227,8 +1247,28 @@ button:disabled {
 
   .hud-buff-hud {
     top: 12px;
+    left: 12px;
     bottom: auto;
-    max-height: 76px;
+    width: min(286px, calc(100vw - 24px));
+    max-height: 74px;
+    padding: 8px 10px;
+  }
+
+  .hud-buff-strip {
+    max-height: 60px;
+    gap: 6px;
+  }
+
+  .hud-buff-strip .buff-chip {
+    min-width: 34px;
+    min-height: 48px;
+    border-radius: 10px;
+  }
+
+  .hud-buff-strip .buff-chip img {
+    width: 27px;
+    height: 39px;
+    border-radius: 7px;
   }
 
   .hud-bottom-right {
