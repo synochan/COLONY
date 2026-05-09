@@ -291,6 +291,7 @@ const clientState = {
     snapshotsPerSecond: 0,
     snapshotAgeMs: 0,
     clockOffsetMs: 0,
+    roomId: "",
     inLossPct: 0,
     outLossPct: 0,
     snapshotsReceived: 0,
@@ -940,6 +941,7 @@ function smoothPlayerState(currentPlayer, targetPlayer) {
   currentPlayer.maxWorkers = targetPlayer.maxWorkers;
   currentPlayer.alive = targetPlayer.alive;
   currentPlayer.level = targetPlayer.level;
+  currentPlayer.killStreak = targetPlayer.killStreak || 0;
   currentPlayer.skinId = targetPlayer.skinId;
   currentPlayer.name = targetPlayer.name;
   currentPlayer.mergeCooldownMs = targetPlayer.mergeCooldownMs;
@@ -1071,6 +1073,14 @@ function refreshWorldPointerFromScreen() {
 
 function recordSnapshotArrival(payload) {
   const now = performance.now();
+  const roomId = payload.config?.roomId || "";
+  if (roomId && roomId !== clientState.network.roomId) {
+    clientState.network.roomId = roomId;
+    clientState.network.snapshotsReceived = 0;
+    clientState.network.snapshotsMissed = 0;
+    clientState.network.lastSnapshotSequence = 0;
+    clientState.network.inLossPct = 0;
+  }
   if (payload.sequence) {
     const previousSequence = clientState.network.lastSnapshotSequence || payload.sequence;
     const missed = Math.max(0, payload.sequence - previousSequence - 1);

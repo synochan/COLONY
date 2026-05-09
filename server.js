@@ -409,6 +409,7 @@ function createRoomState(roomId, roomName, region, mode = "public", config = roo
     profileVersion: 1,
     events: [],
     nextEventId: 1,
+    broadcastSequence: 0,
     lastActiveAt: Date.now(),
     round: {
       number: 1,
@@ -3125,20 +3126,21 @@ function snapshotForViewer({
   snapshotContext = null
 } = {}) {
   const resolvedContext = snapshotContext || buildSnapshotContext();
+  const roomSequence = state.broadcastSequence || 0;
   const profileSession = sessionToken ? getSessionByToken(sessionToken) : state.players.get(playerId) ? getSessionByToken(state.players.get(playerId).sessionToken) : null;
   const fullPlayerList = resolvedContext.publicPlayers;
   const resolvedFocusId = spectatorMode ? resolveSpectatorFocusId(fullPlayerList, spectatorFocusId) : null;
   const resourceViewPlayer = resourceViewStateForViewer({ playerId, spectatorMode, spectatorFocusId: resolvedFocusId });
   const players = snapshotPlayersForViewer(resolvedContext, resourceViewPlayer, spectatorMode ? null : playerId, resolvedFocusId);
   const includeResources =
-    shouldRefreshResourcesForViewer(viewerState, resourceViewPlayer) || broadcastSequence % RESOURCE_REFRESH_INTERVAL === 0;
-  const includeLeaderboard = !viewerState || viewerState.leaderboardVersion !== state.leaderboardVersion || broadcastSequence % LEADERBOARD_REFRESH_INTERVAL === 0;
+    shouldRefreshResourcesForViewer(viewerState, resourceViewPlayer) || roomSequence % RESOURCE_REFRESH_INTERVAL === 0;
+  const includeLeaderboard = !viewerState || viewerState.leaderboardVersion !== state.leaderboardVersion || roomSequence % LEADERBOARD_REFRESH_INTERVAL === 0;
   const includeProfile = !viewerState || !viewerState.profileSent;
   const leaderboard = includeLeaderboard ? resolvedContext.leaderboard : undefined;
 
   const snapshot = {
     type: "state",
-    sequence: broadcastSequence,
+    sequence: roomSequence,
     you: playerId,
     spectator: {
       active: spectatorMode,
@@ -3160,7 +3162,7 @@ function snapshotForViewer({
       roomMode: state.mode
     },
     players,
-    recentEvents: broadcastSequence % RECENT_EVENTS_INTERVAL === 0 ? state.events.slice(-8) : undefined,
+    recentEvents: roomSequence % RECENT_EVENTS_INTERVAL === 0 ? state.events.slice(-8) : undefined,
     round: {
       number: state.round.number,
       status: state.round.status,
@@ -3210,6 +3212,7 @@ function snapshotForViewer({
 
 function broadcastGameState() {
   broadcastSequence += 1;
+  state.broadcastSequence = (state.broadcastSequence || 0) + 1;
   const snapshotContext = buildSnapshotContext();
   for (const player of state.players.values()) {
     if (player.socket?.readyState === 1) {
