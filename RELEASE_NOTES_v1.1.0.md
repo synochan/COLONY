@@ -9,6 +9,8 @@ Colony.io v1.1.0 focuses on smoother combat, clearer HUD feedback, better custom
 - Worker merging now combines worker size, making merged workers visibly larger and stronger.
 - Added HP bars below workers for clearer combat readability.
 - Improved worker movement speed, growth pacing, splitting, hatch bounce, and food collision behavior.
+- Workers now move faster than before and gain a stronger speed boost while the hive is Shift-boosting.
+- Large workers still slow down from size so combat stays readable and every hive remains killable.
 - Workers can now eat food more reliably while moving through it.
 - Workers can eat large green growth circles once they are big enough.
 - Hive eliminations now steal part of the defeated hive's score.

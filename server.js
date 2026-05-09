@@ -67,8 +67,9 @@ const HIVE_ATTACK_KNOCKBACK_LIMIT = 34;
 
 const WORKER_BASE_RADIUS = 8;
 const WORKER_MAX_RADIUS_BONUS = 14;
-const WORKER_BASE_SPEED = 214;
-const WORKER_MIN_SPEED = 104;
+const WORKER_BASE_SPEED = 258;
+const WORKER_MIN_SPEED = 132;
+const WORKER_SIZE_SPEED_PENALTY = 4.85;
 const WORKER_AGGRO_RADIUS = 200;
 const WORKER_HARVEST_RADIUS = 190;
 const WORKER_HEALTH_REGEN = 3;
@@ -79,7 +80,7 @@ const WORKER_SPLIT_FOOD_LOSS = 2;
 const WORKER_HATCH_SPAWN_DISTANCE = 84;
 const WORKER_HATCH_BOUNCE_SPEED = 148;
 const WORKER_SPLIT_BOUNCE_SPEED = 176;
-const WORKER_BOOST_SPEED_BONUS_PCT = 0.12;
+const WORKER_BOOST_SPEED_BONUS_PCT = 0.22;
 const WORKER_SOLIDITY_PADDING = 3;
 const WORKER_SOLIDITY_STRENGTH = 0.72;
 const WORKER_SOLIDITY_ITERATIONS = 3;
@@ -1151,7 +1152,7 @@ function workerFoodForRadius(radius) {
 }
 
 function workerSpeed(worker, owner) {
-  const sizePenalty = Math.pow(Math.max(0, worker.radius - WORKER_BASE_RADIUS), 1.08) * 5.15;
+  const sizePenalty = Math.pow(Math.max(0, worker.radius - WORKER_BASE_RADIUS), 1.08) * WORKER_SIZE_SPEED_PENALTY;
   const base = clamp(WORKER_BASE_SPEED - sizePenalty, WORKER_MIN_SPEED, WORKER_BASE_SPEED);
   const workerSpeedBonus = owner?.buffState?.workerSpeedBonusPct || 0;
   const raidSpeedBonus = worker.mode === "raid" ? owner?.buffState?.raidSpeedBonusPct || 0 : 0;
