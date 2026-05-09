@@ -64,6 +64,8 @@ This project supports:
 
 For Railway, add a PostgreSQL database to the project and expose `DATABASE_URL` to the game service. The server creates the required account and ban tables automatically on startup; the reference schema is in [database/schema.sql](./database/schema.sql).
 
+Production deployments require PostgreSQL by default. If `DATABASE_URL` is missing or the connection fails, the server stops instead of falling back to temporary JSON storage, which prevents account resets after redeploys. For a one-time local JSON import into an empty Postgres database, set `IMPORT_JSON_TO_POSTGRES=1` before the first startup that should import data.
+
 ## Versioning
 
 The server exposes build metadata through `/version`, `/healthz`, `/rooms`, and the in-game network HUD.

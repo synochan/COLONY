@@ -17,6 +17,10 @@ const DEPLOY_CHANNEL = String(process.env.DEPLOY_CHANNEL || (process.env.NODE_EN
 const APP_VERSION = String(process.env.APP_VERSION || packageInfo.version || "0.0.0").trim();
 const BUILD_SHA = String(process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA || "").trim().slice(0, 12);
 const RELEASE_LABEL = `${APP_VERSION}-${DEPLOY_CHANNEL}${BUILD_SHA ? `+${BUILD_SHA}` : ""}`;
+const REQUIRE_POSTGRES =
+  process.env.REQUIRE_POSTGRES === "1" ||
+  (process.env.NODE_ENV === "production" && process.env.ALLOW_JSON_FALLBACK !== "1");
+const IMPORT_JSON_TO_POSTGRES = process.env.IMPORT_JSON_TO_POSTGRES === "1";
 const ACCOUNTS_FILE = path.join(DATA_DIR, "accounts.json");
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
@@ -826,11 +830,21 @@ function createPostgresPersistence() {
       };
     },
     async save(store) {
+      const accounts = Array.isArray(store.accounts) ? store.accounts : [];
+      const bannedGuests = Array.isArray(store.bannedGuests) ? store.bannedGuests : [];
       await this.client.query("BEGIN");
       try {
-        await this.client.query("DELETE FROM colony_accounts");
-        await this.client.query("DELETE FROM colony_banned_guests");
-        for (const account of store.accounts) {
+        if (!accounts.length) {
+          const existingAccounts = await this.client.query("SELECT COUNT(*)::int AS count FROM colony_accounts");
+          if (Number(existingAccounts.rows[0]?.count || 0) > 0 && process.env.ALLOW_EMPTY_POSTGRES_SAVE !== "1") {
+            throw new Error("Refusing to replace existing Postgres accounts with an empty account store.");
+          }
+        }
+
+        const accountIds = accounts.map((account) => account.id).filter(Boolean);
+        const bannedGuestNames = bannedGuests.map((guestName) => String(guestName || "").toLowerCase()).filter(Boolean);
+
+        for (const account of accounts) {
           await this.client.query(
             `
               INSERT INTO colony_accounts (
@@ -838,6 +852,22 @@ function createPostgresPersistence() {
               ) VALUES (
                 $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16
               )
+              ON CONFLICT (id) DO UPDATE SET
+                username = EXCLUDED.username,
+                salt = EXCLUDED.salt,
+                password_hash = EXCLUDED.password_hash,
+                password_algo = EXCLUDED.password_algo,
+                xp = EXCLUDED.xp,
+                level = EXCLUDED.level,
+                owned_skins = EXCLUDED.owned_skins,
+                selected_skin = EXCLUDED.selected_skin,
+                total_matches = EXCLUDED.total_matches,
+                total_kills = EXCLUDED.total_kills,
+                role = EXCLUDED.role,
+                created_at = EXCLUDED.created_at,
+                last_seen_at = EXCLUDED.last_seen_at,
+                banned_at = EXCLUDED.banned_at,
+                ban_reason = EXCLUDED.ban_reason
             `,
             [
               account.id,
@@ -859,12 +889,19 @@ function createPostgresPersistence() {
             ]
           );
         }
-        for (const guestName of store.bannedGuests || []) {
+        await this.client.query("DELETE FROM colony_accounts WHERE NOT (id = ANY($1::text[]))", [accountIds]);
+
+        for (const guestName of bannedGuestNames) {
           await this.client.query(
-            `INSERT INTO colony_banned_guests (guest_name, banned_at) VALUES ($1, $2)`,
+            `
+              INSERT INTO colony_banned_guests (guest_name, banned_at)
+              VALUES ($1, $2)
+              ON CONFLICT (guest_name) DO UPDATE SET banned_at = EXCLUDED.banned_at
+            `,
             [guestName, Date.now()]
           );
         }
+        await this.client.query("DELETE FROM colony_banned_guests WHERE NOT (guest_name = ANY($1::text[]))", [bannedGuestNames]);
         await this.client.query("COMMIT");
       } catch (error) {
         await this.client.query("ROLLBACK");
@@ -884,10 +921,15 @@ async function initializePersistence() {
       persistence = postgresPersistence;
       logStructured("info", "persistence.postgres.ready");
     } catch (error) {
-      logStructured("warn", "persistence.postgres.failed", { message: error.message });
+      logStructured("error", "persistence.postgres.failed", { message: error.message, requirePostgres: REQUIRE_POSTGRES });
+      if (REQUIRE_POSTGRES) {
+        throw error;
+      }
       persistence = createJsonPersistence();
       await persistence.init();
     }
+  } else if (REQUIRE_POSTGRES) {
+    throw new Error("DATABASE_URL is required for this deployment, but it is not set.");
   } else {
     await persistence.init();
   }
@@ -895,6 +937,17 @@ async function initializePersistence() {
   accountStore = await persistence.load();
   accountStore.accounts = Array.isArray(accountStore.accounts) ? accountStore.accounts : [];
   accountStore.bannedGuests = Array.isArray(accountStore.bannedGuests) ? accountStore.bannedGuests : [];
+  if (persistence.mode === "postgres" && IMPORT_JSON_TO_POSTGRES && accountStore.accounts.length === 0) {
+    const jsonStore = loadJsonAccountStore();
+    const hasJsonData = Array.isArray(jsonStore.accounts) && jsonStore.accounts.length > 0;
+    if (hasJsonData) {
+      accountStore = jsonStore;
+      accountStore.accounts = Array.isArray(accountStore.accounts) ? accountStore.accounts : [];
+      accountStore.bannedGuests = Array.isArray(accountStore.bannedGuests) ? accountStore.bannedGuests : [];
+      await persistence.save(accountStore);
+      logStructured("info", "persistence.postgres.imported_json", { accounts: accountStore.accounts.length });
+    }
+  }
 }
 
 function scheduleAccountSave() {
