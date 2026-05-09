@@ -374,7 +374,7 @@ const securityResponseHeaders = {
     "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; form-action 'self'"
 };
 
-const ROOM_REGIONS = ["singapore", "tokyo", "sydney", "frankfurt", "virginia"];
+const ROOM_REGIONS = [SERVER_REGION];
 
 function roomConfigDefaults() {
   return {
@@ -410,6 +410,7 @@ function createRoomState(roomId, roomName, region, mode = "public", config = roo
     events: [],
     nextEventId: 1,
     broadcastSequence: 0,
+    lastTickAt: Date.now(),
     lastActiveAt: Date.now(),
     round: {
       number: 1,
@@ -429,7 +430,6 @@ const spectatorRoomIndex = new Map();
 
 const sessions = new Map();
 const requestRateLimits = new Map();
-let lastTick = Date.now();
 let saveTimer = null;
 let broadcastSequence = 0;
 let accountStore = { accounts: [], bannedGuests: [] };
@@ -1071,6 +1071,11 @@ function playerSpeedForRadius(radius, player) {
 
 function workerRadiusForFood(food) {
   return WORKER_BASE_RADIUS + Math.min(WORKER_MAX_RADIUS_BONUS, Math.sqrt(Math.max(0, food)) * 0.92);
+}
+
+function workerFoodForRadius(radius) {
+  const growthRadius = clamp(radius - WORKER_BASE_RADIUS, 0, WORKER_MAX_RADIUS_BONUS);
+  return Math.pow(growthRadius / 0.92, 2);
 }
 
 function workerSpeed(worker, owner) {
@@ -2471,7 +2476,15 @@ function mergeWorkers(player) {
   const merged = createWorker(player);
   merged.x = bestPair.centerX;
   merged.y = bestPair.centerY;
-  merged.food = bestPair.first.food + bestPair.second.food + MERGE_BONUS_FOOD;
+  const mergedBodyRadius = Math.min(
+    WORKER_BASE_RADIUS + WORKER_MAX_RADIUS_BONUS,
+    Math.sqrt(bestPair.first.radius * bestPair.first.radius + bestPair.second.radius * bestPair.second.radius)
+  );
+  const mergedSizeFood = workerFoodForRadius(mergedBodyRadius);
+  merged.food = Math.max(
+    bestPair.first.food + bestPair.second.food + MERGE_BONUS_FOOD,
+    mergedSizeFood + MERGE_BONUS_FOOD * 0.5
+  );
   merged.mode = player.isAttacking ? "raid" : "harvest";
   refreshWorkerDerivedStats(merged, player);
   merged.health = clamp(bestPair.first.health + bestPair.second.health, 0, merged.healthMax);
@@ -2945,8 +2958,9 @@ function updateWorkers(player, deltaSeconds) {
 
 function updateGame() {
   const now = Date.now();
-  const deltaSeconds = Math.min((now - lastTick) / 1000, 0.05);
-  lastTick = now;
+  const lastTickAt = Number.isFinite(state.lastTickAt) ? state.lastTickAt : now;
+  const deltaSeconds = Math.min(Math.max((now - lastTickAt) / 1000, 0), 0.05);
+  state.lastTickAt = now;
 
   if (state.round.status === "ended") {
     if (Date.now() >= state.round.countdownEndsAt) {

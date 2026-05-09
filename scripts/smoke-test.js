@@ -72,6 +72,42 @@ function connectWebSocket(url) {
   });
 }
 
+function waitForSocketMessage(socket, predicate, timeoutMs = 6000) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for WebSocket message."));
+    }, timeoutMs);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      socket.off("message", onMessage);
+      socket.off("error", onError);
+    }
+
+    function onError(error) {
+      cleanup();
+      reject(error);
+    }
+
+    function onMessage(raw) {
+      let payload;
+      try {
+        payload = JSON.parse(raw.toString("utf8"));
+      } catch {
+        return;
+      }
+      if (predicate(payload)) {
+        cleanup();
+        resolve(payload);
+      }
+    }
+
+    socket.on("message", onMessage);
+    socket.once("error", onError);
+  });
+}
+
 async function main() {
   const child = spawn(process.execPath, ["server.js"], {
     cwd: process.cwd(),
@@ -104,7 +140,10 @@ async function main() {
       token: register.authToken
     });
 
-    await request("/rooms");
+    const roomsPayload = await request("/rooms");
+    if (roomsPayload.serverRegion !== "singapore" || roomsPayload.supportedRegions.length !== 1 || roomsPayload.supportedRegions[0] !== "singapore") {
+      throw new Error("Room regions should only expose the configured server region.");
+    }
 
     const join = await request("/join", {
       method: "POST",
@@ -118,6 +157,63 @@ async function main() {
 
     const playerWs = await connectWebSocket(`${WS_HOST}?playerId=${encodeURIComponent(join.playerId)}`);
     playerWs.socket.close();
+    await wait(250);
+
+    const customJoin = await request("/join", {
+      method: "POST",
+      token: register.authToken,
+      csrfToken: authMe.csrfToken,
+      body: {
+        roomMode: "custom",
+        roomRegion: "singapore",
+        roomName: "Smoke Movement",
+        roomConfig: {
+          maxPlayers: 8,
+          foodTarget: 160,
+          growthNodeTarget: 8,
+          roundScoreTarget: 6000
+        }
+      }
+    });
+
+    const customWs = await connectWebSocket(`${WS_HOST}?playerId=${encodeURIComponent(customJoin.playerId)}`);
+    const initialCustomState = await waitForSocketMessage(customWs.socket, (payload) => payload.type === "state" && payload.you === customJoin.playerId);
+    const initialPlayer = initialCustomState.players.find((player) => player.id === customJoin.playerId);
+    if (!initialPlayer) {
+      throw new Error("Custom room player missing from initial state.");
+    }
+    customWs.socket.send(
+      JSON.stringify({
+        type: "input",
+        inputSeq: 1,
+        x: 1,
+        y: 0,
+        boost: false,
+        hatch: false,
+        merge: false,
+        split: false,
+        attack: false,
+        pointerX: initialPlayer.x + 300,
+        pointerY: initialPlayer.y
+      })
+    );
+    const movedCustomState = await waitForSocketMessage(
+      customWs.socket,
+      (payload) => {
+        if (payload.type !== "state" || payload.you !== customJoin.playerId) {
+          return false;
+        }
+        const player = payload.players.find((entry) => entry.id === customJoin.playerId);
+        return player && player.x > initialPlayer.x + 4;
+      },
+      7000
+    );
+    const movedPlayer = movedCustomState.players.find((player) => player.id === customJoin.playerId);
+    if (!movedPlayer || movedPlayer.x <= initialPlayer.x + 4) {
+      throw new Error("Custom room player did not move after input.");
+    }
+    customWs.socket.close();
+    await wait(250);
 
     const spectate = await request("/spectate", {
       method: "POST",
