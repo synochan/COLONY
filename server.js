@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { WebSocketServer } = require("ws");
+const packageInfo = require("./package.json");
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -10,6 +11,12 @@ const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, "data");
 const SERVER_REGION = String(process.env.SERVER_REGION || "singapore").trim().toLowerCase() || "singapore";
+const DEPLOY_CHANNEL = String(process.env.DEPLOY_CHANNEL || (process.env.NODE_ENV === "production" ? "production" : "development"))
+  .trim()
+  .toLowerCase();
+const APP_VERSION = String(process.env.APP_VERSION || packageInfo.version || "0.0.0").trim();
+const BUILD_SHA = String(process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA || "").trim().slice(0, 12);
+const RELEASE_LABEL = `${APP_VERSION}-${DEPLOY_CHANNEL}${BUILD_SHA ? `+${BUILD_SHA}` : ""}`;
 const ACCOUNTS_FILE = path.join(DATA_DIR, "accounts.json");
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
@@ -626,6 +633,18 @@ function roomSummary(roomState) {
       number: roomState.round.number,
       status: roomState.round.status
     }
+  };
+}
+
+function versionPayload() {
+  return {
+    name: packageInfo.name || "colony-io",
+    version: APP_VERSION,
+    channel: DEPLOY_CHANNEL,
+    label: RELEASE_LABEL,
+    commit: BUILD_SHA,
+    nodeEnv: process.env.NODE_ENV || "development",
+    region: SERVER_REGION
   };
 }
 
@@ -1650,6 +1669,7 @@ function adminDashboardPayload() {
     bannedGuests: [...(accountStore.bannedGuests || [])].sort(),
     rooms: roomStates.map(roomSummary).sort((left, right) => right.players - left.players),
     network: {
+      version: versionPayload(),
       tickRate: TICK_RATE,
       broadcastRate: BROADCAST_RATE,
       onlinePlayers: totalPlayers,
@@ -3170,6 +3190,8 @@ function snapshotForViewer({
       tickRate: TICK_RATE,
       broadcastRate: BROADCAST_RATE,
       onlinePlayers: state.players.size,
+      version: RELEASE_LABEL,
+      versionInfo: versionPayload(),
       roomId: state.id,
       roomName: roomDisplayName(state),
       roomRegion: state.region,
@@ -4077,8 +4099,14 @@ const server = http.createServer(async (request, response) => {
       players: roomStates.reduce((sum, roomState) => sum + roomState.players.size, 0),
       spectators: roomStates.reduce((sum, roomState) => sum + roomState.spectators.size, 0),
       rooms: roomStates.length,
-      region: SERVER_REGION
+      region: SERVER_REGION,
+      version: versionPayload()
     });
+    return;
+  }
+
+  if (request.method === "GET" && requestUrl.pathname === "/version") {
+    sendJson(response, 200, versionPayload());
     return;
   }
 
@@ -4086,6 +4114,7 @@ const server = http.createServer(async (request, response) => {
     sendJson(response, 200, {
       serverRegion: SERVER_REGION,
       supportedRegions: ROOM_REGIONS,
+      version: versionPayload(),
       rooms: publicRoomsPayload()
     });
     return;
@@ -4443,6 +4472,8 @@ async function bootstrap() {
       port: PORT,
       persistence: persistence?.mode || "json",
       region: SERVER_REGION,
+      version: RELEASE_LABEL,
+      channel: DEPLOY_CHANNEL,
       rooms: rooms.size
     });
   });

@@ -7,6 +7,9 @@ const buffTooltip = document.getElementById("buffTooltip");
 const leaderboard = document.getElementById("leaderboard");
 const killFeedPanel = document.getElementById("killFeedPanel");
 const joinOverlay = document.getElementById("joinOverlay");
+const patchNotesButton = document.getElementById("patchNotesButton");
+const patchNotesCard = document.getElementById("patchNotesCard");
+const closePatchNotesButton = document.getElementById("closePatchNotesButton");
 const networkPanel = document.getElementById("networkPanel");
 const optionsToggleButton = document.getElementById("optionsToggleButton");
 const adminPanel = document.getElementById("adminPanel");
@@ -634,6 +637,14 @@ function closeOptionsMenu() {
 
 function isOptionsMenuOpen() {
   return Boolean(optionsOverlay && !optionsOverlay.classList.contains("hidden"));
+}
+
+function openPatchNotes() {
+  patchNotesCard?.classList.remove("hidden");
+}
+
+function closePatchNotes() {
+  patchNotesCard?.classList.add("hidden");
 }
 
 function getSkin(skinId) {
@@ -2336,13 +2347,15 @@ function renderNetworkPanel() {
   const snapshot = clientState.snapshot;
   const onlinePlayers = snapshot?.config?.onlinePlayers ?? snapshot?.players?.length ?? 0;
   const targetSnapRate = snapshot?.config?.broadcastRate ?? 0;
+  const versionLabel = snapshot?.config?.version ? ` | ${snapshot.config.version}` : "";
   networkPanel.textContent =
     `Ping ${Math.round(clientState.network.pingMs || 0)}ms` +
     ` | Jitter ${Math.round(clientState.network.jitterMs || 0)}ms` +
     ` | Snap ${Math.max(0, clientState.network.snapshotsPerSecond || 0).toFixed(1)}/${targetSnapRate}` +
     ` | In ${Math.max(0, clientState.network.inLossPct || 0).toFixed(1)}%` +
     ` | Out ${Math.max(0, clientState.network.outLossPct || 0).toFixed(1)}%` +
-    ` | Online ${onlinePlayers}`;
+    ` | Online ${onlinePlayers}` +
+    versionLabel;
 }
 
 function renderKillFeed() {
@@ -2788,6 +2801,10 @@ function handleKeyChange(event, isPressed) {
     closeOptionsMenu();
     return;
   }
+  if (key === "escape" && isPressed && patchNotesCard && !patchNotesCard.classList.contains("hidden")) {
+    closePatchNotes();
+    return;
+  }
   if (key === "o" && isPressed) {
     if (isOptionsMenuOpen()) {
       closeOptionsMenu();
@@ -3024,6 +3041,15 @@ openOptionsMenuButton?.addEventListener("click", () => {
 closeOptionsButton?.addEventListener("click", () => {
   playUiClickSound();
   closeOptionsMenu();
+});
+patchNotesButton?.addEventListener("click", () => {
+  ensureAudioContext();
+  playUiClickSound();
+  openPatchNotes();
+});
+closePatchNotesButton?.addEventListener("click", () => {
+  playUiClickSound();
+  closePatchNotes();
 });
 openAdminDashboardButton?.addEventListener("click", () => {
   ensureAudioContext();

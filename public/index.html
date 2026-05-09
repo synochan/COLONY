@@ -89,6 +89,56 @@
       </section>
 
       <section id="joinOverlay" class="join-overlay">
+        <button id="patchNotesButton" type="button" class="patch-notes-button">Patch Notes</button>
+        <aside id="patchNotesCard" class="patch-notes-card hidden" aria-live="polite">
+          <div class="patch-notes-head">
+            <div>
+              <p class="eyebrow">Latest Update</p>
+              <h2>Colony.io v1.1.0</h2>
+            </div>
+            <button id="closePatchNotesButton" type="button" class="secondary-button patch-notes-close">Close</button>
+          </div>
+          <p class="join-copy">
+            A smoother, larger, and more readable arena update focused on worker control, custom games, network feel, and HUD clarity.
+          </p>
+          <div class="patch-notes-list">
+            <section>
+              <h3>Gameplay</h3>
+              <ul>
+                <li>Worker merging now combines worker size so merged workers become visibly stronger.</li>
+                <li>Workers now show HP bars below them for clearer combat reads.</li>
+                <li>Improved worker speed, growth, splitting, hatch bounce, and food collision behavior.</li>
+                <li>Hive eliminations now steal part of the defeated hive's score.</li>
+                <li>Added kill streak support, kill sounds, larger maps, and a 20,000 score round target.</li>
+              </ul>
+            </section>
+            <section>
+              <h3>Cards & Buffs</h3>
+              <ul>
+                <li>Added run-based card buff choices with Uncommon, Rare, Epic, and Legendary rarities.</li>
+                <li>Legendary choices appear at major run milestones.</li>
+                <li>Active buffs now appear in a compact HUD strip with hover descriptions.</li>
+              </ul>
+            </section>
+            <section>
+              <h3>Network & Custom Games</h3>
+              <ul>
+                <li>Improved live snapshot handling for smoother gameplay.</li>
+                <li>Fixed custom games where players could appear unable to move.</li>
+                <li>Added custom room settings for player count, resources, score goal, map size, and damage tuning.</li>
+                <li>Network stats now show ping, jitter, snapshots, packet in/out, online players, and build version.</li>
+              </ul>
+            </section>
+            <section>
+              <h3>UI, Audio & Spectate</h3>
+              <ul>
+                <li>Refined HUD layout, leaderboard, How To Play panel, buff display, and 100% browser zoom behavior.</li>
+                <li>Added music, sound effects, volume controls, mute, and low graphics options.</li>
+                <li>Added spectate mode for watching matches while dead or without joining the arena.</li>
+              </ul>
+            </section>
+          </div>
+        </aside>
         <div class="join-card">
           <p class="eyebrow">Welcome To Colony.io</p>
           <h2>Choose Your Hive</h2>

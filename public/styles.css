@@ -700,6 +700,100 @@ button:disabled {
   background: rgba(5, 4, 16, 0.42);
 }
 
+.patch-notes-button {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 2;
+  width: auto;
+  min-width: 132px;
+  border: 1px solid rgba(255, 209, 102, 0.32);
+  border-radius: 999px;
+  padding: 11px 16px;
+  background: linear-gradient(135deg, rgba(255, 211, 106, 0.94), rgba(255, 176, 46, 0.94));
+  color: #23163e;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.28);
+}
+
+.patch-notes-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.34);
+}
+
+.patch-notes-card {
+  position: absolute;
+  top: 68px;
+  right: 18px;
+  z-index: 3;
+  width: min(430px, calc(100vw - 36px));
+  max-height: min(78vh, 720px);
+  overflow: auto;
+  border-radius: 24px;
+  padding: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background:
+    radial-gradient(circle at top left, rgba(255, 184, 77, 0.14), transparent 38%),
+    rgba(12, 9, 30, 0.97);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+}
+
+.patch-notes-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.patch-notes-head h2 {
+  margin: 4px 0 0;
+  font-size: 1.25rem;
+}
+
+.patch-notes-close {
+  width: auto !important;
+  min-width: 76px;
+  margin-top: 0 !important;
+  padding: 9px 12px !important;
+  font-size: 0.78rem;
+}
+
+.patch-notes-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.patch-notes-list section {
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.patch-notes-list h3 {
+  margin: 0 0 8px;
+  color: var(--gold);
+  font-size: 0.86rem;
+}
+
+.patch-notes-list ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.patch-notes-list li + li {
+  margin-top: 6px;
+}
+
 .card-choice-overlay {
   position: absolute;
   inset: 0;
@@ -1208,6 +1302,16 @@ button:disabled {
     font-size: 1.15rem;
   }
 
+  .patch-notes-button {
+    top: 12px;
+    right: 12px;
+  }
+
+  .patch-notes-card {
+    top: 58px;
+    right: 12px;
+  }
+
   .skin-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1237,6 +1341,27 @@ button:disabled {
     left: 12px;
     width: calc(100vw - 24px);
     transform: none;
+  }
+
+  .patch-notes-button {
+    top: 12px;
+    right: 12px;
+    min-width: 112px;
+    padding: 9px 12px;
+    font-size: 0.76rem;
+  }
+
+  .patch-notes-card {
+    top: 54px;
+    right: 12px;
+    left: 12px;
+    width: auto;
+    max-height: min(74vh, 620px);
+    padding: 16px;
+  }
+
+  .patch-notes-head {
+    gap: 10px;
   }
 
   .hud-bottom-left {

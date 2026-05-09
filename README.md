@@ -64,4 +64,14 @@ This project supports:
 
 For Railway, add a PostgreSQL database to the project and expose `DATABASE_URL` to the game service. The server creates the required account and ban tables automatically on startup; the reference schema is in [database/schema.sql](./database/schema.sql).
 
+## Versioning
+
+The server exposes build metadata through `/version`, `/healthz`, `/rooms`, and the in-game network HUD.
+
+- Local development defaults to `1.0.0-development`.
+- Docker/Railway defaults to `1.0.0-production` because `NODE_ENV=production` is set in the Dockerfile.
+- Set `APP_VERSION` to override the release number for a deployment.
+- Set `DEPLOY_CHANNEL=development` or `DEPLOY_CHANNEL=production` when you want explicit branch-based labels.
+- Railway commit hashes are appended automatically when `RAILWAY_GIT_COMMIT_SHA` is available.
+
 If you want the full system write-up covering architecture, PDC concepts, performance evidence, and design rationale, see [Details.md](./Details.md).

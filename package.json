@@ -1,6 +1,6 @@
 {
   "name": "colony-io",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Colony.io multiplayer browser game",
   "main": "server.js",
   "scripts": {
