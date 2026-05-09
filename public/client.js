@@ -2227,10 +2227,17 @@ function renderPlayer(player, isYou) {
   context.arc(screen.x + radius * 0.16, screen.y + radius * 0.1, radius * 0.18, 0, Math.PI * 2);
   context.fill();
 
-  context.fillStyle = "#fff8df";
+  const nameColor = player.isAdmin ? "#6b000d" : "#fff8df";
+  const nameGlow = player.isAdmin && !isLowGraphics();
+  context.fillStyle = nameColor;
   context.font = `700 ${Math.max(11, scaleWorld(14))}px Manrope`;
   context.textAlign = "center";
+  if (nameGlow) {
+    context.shadowColor = "rgba(255, 20, 45, 0.86)";
+    context.shadowBlur = Math.max(8, scaleWorld(18));
+  }
   context.fillText(player.name, screen.x, screen.y - radius - scaleWorld(14));
+  context.shadowBlur = 0;
 
   const barWidth = Math.max(38, radius * 2.3);
   const barX = screen.x - barWidth / 2;
