@@ -32,7 +32,7 @@ const MAP_HEIGHT = 5200;
 const FOOD_TARGET = 720;
 const GROWTH_NODE_TARGET = 42;
 const TICK_RATE = 30;
-const BROADCAST_RATE = 24;
+const BROADCAST_RATE = 20;
 const MAX_PLAYERS = 30;
 const MIN_PLAYERS = 2;
 const INPUT_TIMEOUT_MS = 5000;
@@ -89,7 +89,8 @@ const COLONY_KILL_SCORE_REWARD = 58;
 const HIVE_SCORE_STEAL_PCT = 0.42;
 const HIVE_SCORE_STEAL_MIN = 30;
 const HIVE_SCORE_STEAL_CAP = 780;
-const MAX_SOCKET_BACKLOG_BYTES = 256 * 1024;
+const MAX_SOCKET_BACKLOG_BYTES = 48 * 1024;
+const SOFT_SOCKET_BACKLOG_BYTES = 12 * 1024;
 const MAX_HTTP_BODY_BYTES = 16 * 1024;
 const MAX_WS_PAYLOAD_BYTES = 8 * 1024;
 const MAX_INPUT_MESSAGES_PER_WINDOW = 240;
@@ -3401,7 +3402,12 @@ function broadcastGameState() {
   const snapshotContext = buildSnapshotContext();
   for (const player of state.players.values()) {
     if (player.socket?.readyState === 1) {
-      if ((player.socket.bufferedAmount || 0) > MAX_SOCKET_BACKLOG_BYTES) {
+      const bufferedAmount = player.socket.bufferedAmount || 0;
+      if (bufferedAmount > MAX_SOCKET_BACKLOG_BYTES) {
+        player.socket.close(1013, "Connection backlog exceeded");
+        continue;
+      }
+      if (bufferedAmount > SOFT_SOCKET_BACKLOG_BYTES) {
         continue;
       }
       player.netState = player.netState || { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
@@ -3411,7 +3417,12 @@ function broadcastGameState() {
 
   for (const spectator of state.spectators.values()) {
     if (spectator.socket?.readyState === 1) {
-      if ((spectator.socket.bufferedAmount || 0) > MAX_SOCKET_BACKLOG_BYTES) {
+      const bufferedAmount = spectator.socket.bufferedAmount || 0;
+      if (bufferedAmount > MAX_SOCKET_BACKLOG_BYTES) {
+        spectator.socket.close(1013, "Connection backlog exceeded");
+        continue;
+      }
+      if (bufferedAmount > SOFT_SOCKET_BACKLOG_BYTES) {
         continue;
       }
       spectator.netState = spectator.netState || { resourcesVersion: 0, leaderboardVersion: 0, profileSent: false };
