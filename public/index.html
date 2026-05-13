@@ -51,6 +51,7 @@
 
       <section class="hud hud-bottom-right">
         <div class="network-cluster">
+          <div id="roomCodeBadge" class="room-code-badge hidden"></div>
           <div id="networkPanel" class="network-strip"></div>
           <button id="optionsToggleButton" type="button" class="secondary-button hud-mini-button">Options</button>
         </div>
@@ -126,7 +127,7 @@
                 <li>Improved live snapshot handling for smoother gameplay.</li>
                 <li>Fixed custom games where players could appear unable to move.</li>
                 <li>Added custom room settings for player count, resources, score goal, map size, and damage tuning.</li>
-                <li>Network stats now show ping, jitter, snapshots, packet in/out, online players, and build version.</li>
+                <li>Network HUD now keeps the focus on quick Ping readability.</li>
               </ul>
             </section>
             <section>
@@ -182,83 +183,122 @@
             </div>
           </div>
 
-          <div id="authAuthed" class="hidden">
+          <div id="authAuthed" class="menu-stack hidden">
             <div id="profileSummary" class="profile-summary"></div>
-            <div class="room-panel">
-              <div class="room-panel-head">
-                <p class="panel-label">Arena</p>
-                <select id="roomModeSelect">
-                  <option value="public">Public Arena</option>
-                  <option value="custom">Custom Game</option>
-                </select>
-              </div>
-              <div class="room-grid">
-                <label id="roomRegionLabel">
-                  <span>Region</span>
-                  <select id="roomRegionSelect"></select>
-                </label>
-                <label id="roomNameLabel" class="hidden">
-                  <span>Room Name</span>
-                  <input id="roomNameInput" maxlength="28" placeholder="Custom Colony" />
-                </label>
-                <label id="roomPickerLabel" class="hidden">
-                  <span>Join Existing Room</span>
-                  <select id="roomPickerSelect">
-                    <option value="">Create new custom game</option>
-                  </select>
-                </label>
-                <label>
-                  <span>Max Players</span>
-                  <input id="roomMaxPlayersInput" type="number" min="2" max="50" value="16" />
-                </label>
-                <label>
-                  <span>Food Target</span>
-                  <input id="roomFoodTargetInput" type="number" min="80" max="1600" value="480" />
-                </label>
-                <label>
-                  <span>Growth Nodes</span>
-                  <input id="roomGrowthTargetInput" type="number" min="4" max="120" value="24" />
-                </label>
-                <label>
-                  <span>Score Goal</span>
-                  <input id="roomGoalInput" type="number" min="3000" max="50000" value="12000" />
-                </label>
-                <label>
-                  <span>Map Width</span>
-                  <input id="roomMapWidthInput" type="number" min="2800" max="12000" value="8200" />
-                </label>
-                <label>
-                  <span>Map Height</span>
-                  <input id="roomMapHeightInput" type="number" min="1800" max="7200" value="5200" />
-                </label>
-                <label>
-                  <span>Food Weight</span>
-                  <input id="roomFoodValueInput" type="number" min="0.5" max="3" step="0.1" value="1" />
-                </label>
-                <label>
-                  <span>Growth Weight</span>
-                  <input id="roomGrowthValueInput" type="number" min="0.5" max="3" step="0.1" value="1" />
-                </label>
-                <label>
-                  <span>Hive Damage</span>
-                  <input id="roomHiveDamageInput" type="number" min="0.5" max="3" step="0.1" value="1" />
-                </label>
-                <label>
-                  <span>Worker Damage</span>
-                  <input id="roomWorkerDamageInput" type="number" min="0.5" max="3" step="0.1" value="1" />
-                </label>
-              </div>
-              <div id="roomListSummary" class="room-list-summary"></div>
-            </div>
-            <p class="panel-label">Available skins</p>
-            <div id="ownedSkinGrid" class="skin-grid"></div>
-            <div class="auth-actions">
+            <div class="auth-actions primary-actions">
               <button id="enterArenaButton" type="button">Play Now</button>
               <button id="spectateButton" type="button" class="secondary-button">Spectate</button>
               <button id="openOptionsMenuButton" type="button" class="secondary-button">Options</button>
               <button id="openAdminDashboardButton" type="button" class="secondary-button hidden">Admin Dashboard</button>
               <button id="logoutButton" type="button" class="secondary-button">Log Out</button>
             </div>
+            <div class="room-panel">
+              <div class="room-panel-head">
+                <div>
+                  <p class="panel-label">Arena</p>
+                  <p class="room-panel-kicker">Pick public matchmaking or create a private room code.</p>
+                </div>
+                <div class="room-mode-control">
+                  <div class="room-mode-tabs" role="group" aria-label="Arena mode">
+                    <button type="button" class="room-mode-tab active" data-room-mode-value="public">Public</button>
+                    <button type="button" class="room-mode-tab" data-room-mode-value="custom">Private Custom</button>
+                  </div>
+                  <select id="roomModeSelect" class="room-mode-native" aria-label="Arena mode">
+                    <option value="public">Public Arena</option>
+                    <option value="custom">Private Custom</option>
+                  </select>
+                </div>
+              </div>
+              <div class="room-grid">
+                <div class="room-section room-section-identity">
+                  <div class="room-section-title">
+                    <strong>Room Access</strong>
+                    <small>Leave code blank to create a new private room.</small>
+                  </div>
+                  <label id="roomRegionLabel">
+                    <span>Region</span>
+                    <select id="roomRegionSelect"></select>
+                  </label>
+                  <label id="roomNameLabel" class="hidden">
+                    <span>Room Name</span>
+                    <input id="roomNameInput" maxlength="28" placeholder="Custom Colony" />
+                  </label>
+                  <label id="roomCodeLabel" class="hidden">
+                    <span>Private Code</span>
+                    <input id="roomCodeInput" maxlength="5" placeholder="ABCDE" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <div class="private-room-actions">
+                    <button id="createPrivateRoomButton" type="button">Create Private Room</button>
+                    <button id="joinPrivateRoomButton" type="button" class="secondary-button">Join Private Room</button>
+                  </div>
+                  <label id="roomPickerLabel" class="hidden">
+                    <span>Join Existing Room</span>
+                    <select id="roomPickerSelect">
+                      <option value="">Create new custom game</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="room-section room-section-rules">
+                  <div class="room-section-title">
+                    <strong>Match Rules</strong>
+                    <small>Shape match size, goals, and resources.</small>
+                  </div>
+                  <label>
+                    <span>Max Players</span>
+                    <input id="roomMaxPlayersInput" type="number" min="2" max="50" value="16" />
+                  </label>
+                  <label>
+                    <span>Score Goal</span>
+                    <input id="roomGoalInput" type="number" min="3000" max="50000" value="12000" />
+                  </label>
+                  <label>
+                    <span>Food Target</span>
+                    <input id="roomFoodTargetInput" type="number" min="80" max="1600" value="480" />
+                  </label>
+                  <label>
+                    <span>Growth Nodes</span>
+                    <input id="roomGrowthTargetInput" type="number" min="4" max="120" value="24" />
+                  </label>
+                </div>
+                <details class="room-section room-section-advanced">
+                  <summary>
+                    <span>
+                      <strong>Advanced Tuning</strong>
+                      <small>Map size and damage/resource multipliers.</small>
+                    </span>
+                  </summary>
+                  <div class="advanced-grid">
+                    <label>
+                      <span>Map Width</span>
+                      <input id="roomMapWidthInput" type="number" min="2800" max="12000" value="8200" />
+                    </label>
+                    <label>
+                      <span>Map Height</span>
+                      <input id="roomMapHeightInput" type="number" min="1800" max="7200" value="5200" />
+                    </label>
+                    <label>
+                      <span>Food Weight</span>
+                      <input id="roomFoodValueInput" type="number" min="0.5" max="3" step="0.1" value="1" />
+                    </label>
+                    <label>
+                      <span>Growth Weight</span>
+                      <input id="roomGrowthValueInput" type="number" min="0.5" max="3" step="0.1" value="1" />
+                    </label>
+                    <label>
+                      <span>Hive Damage</span>
+                      <input id="roomHiveDamageInput" type="number" min="0.5" max="3" step="0.1" value="1" />
+                    </label>
+                    <label>
+                      <span>Worker Damage</span>
+                      <input id="roomWorkerDamageInput" type="number" min="0.5" max="3" step="0.1" value="1" />
+                    </label>
+                  </div>
+                </details>
+              </div>
+              <div id="roomListSummary" class="room-list-summary"></div>
+            </div>
+            <p class="panel-label">Available skins</p>
+            <div id="ownedSkinGrid" class="skin-grid"></div>
           </div>
         </div>
       </section>
@@ -281,42 +321,67 @@
             <div>
               <p class="eyebrow">Settings</p>
               <h2>Game Options</h2>
+              <p class="options-subtitle">Tune audio, readability, and rendering for this browser.</p>
             </div>
             <button id="closeOptionsButton" type="button" class="secondary-button options-close-button">Close</button>
           </div>
-          <p class="join-copy">
-            Tune the experience for your device. Audio settings apply locally on this browser.
-          </p>
           <div class="options-grid">
-            <label class="option-row option-toggle" for="muteAllToggle">
-              <span>Mute All Audio</span>
-              <input id="muteAllToggle" type="checkbox" />
-            </label>
-            <label class="option-row option-toggle" for="lowGraphicsToggle">
-              <span>Low Graphics Mode</span>
-              <input id="lowGraphicsToggle" type="checkbox" />
-            </label>
-            <label class="option-row" for="masterVolumeInput">
-              <span>Master Volume</span>
-              <div class="option-control">
-                <input id="masterVolumeInput" type="range" min="0" max="100" step="1" />
-                <strong id="masterVolumeValue">70%</strong>
+            <section class="options-section">
+              <div class="options-section-head">
+                <strong>Audio</strong>
+                <span>Local to this device</span>
               </div>
-            </label>
-            <label class="option-row" for="musicVolumeInput">
-              <span>Music Volume</span>
-              <div class="option-control">
-                <input id="musicVolumeInput" type="range" min="0" max="100" step="1" />
-                <strong id="musicVolumeValue">45%</strong>
+              <label class="option-row option-toggle" for="muteAllToggle">
+                <span>
+                  <strong>Mute All Audio</strong>
+                  <small>Silence music and effects instantly.</small>
+                </span>
+                <input id="muteAllToggle" type="checkbox" />
+              </label>
+              <label class="option-row" for="masterVolumeInput">
+                <span>
+                  <strong>Master Volume</strong>
+                  <small>Controls the whole sound mix.</small>
+                </span>
+                <div class="option-control">
+                  <input id="masterVolumeInput" type="range" min="0" max="100" step="1" />
+                  <strong id="masterVolumeValue">70%</strong>
+                </div>
+              </label>
+              <label class="option-row" for="musicVolumeInput">
+                <span>
+                  <strong>Music Volume</strong>
+                  <small>Adjust background music only.</small>
+                </span>
+                <div class="option-control">
+                  <input id="musicVolumeInput" type="range" min="0" max="100" step="1" />
+                  <strong id="musicVolumeValue">45%</strong>
+                </div>
+              </label>
+              <label class="option-row" for="sfxVolumeInput">
+                <span>
+                  <strong>Sound Effects</strong>
+                  <small>Worker, combat, and menu feedback.</small>
+                </span>
+                <div class="option-control">
+                  <input id="sfxVolumeInput" type="range" min="0" max="100" step="1" />
+                  <strong id="sfxVolumeValue">75%</strong>
+                </div>
+              </label>
+            </section>
+            <section class="options-section">
+              <div class="options-section-head">
+                <strong>Performance</strong>
+                <span>Visual comfort and speed</span>
               </div>
-            </label>
-            <label class="option-row" for="sfxVolumeInput">
-              <span>Sound Effects</span>
-              <div class="option-control">
-                <input id="sfxVolumeInput" type="range" min="0" max="100" step="1" />
-                <strong id="sfxVolumeValue">75%</strong>
-              </div>
-            </label>
+              <label class="option-row option-toggle" for="lowGraphicsToggle">
+                <span>
+                  <strong>Low Graphics Mode</strong>
+                  <small>Reduces glow and extra visual effects.</small>
+                </span>
+                <input id="lowGraphicsToggle" type="checkbox" />
+              </label>
+            </section>
           </div>
         </div>
       </section>

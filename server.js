@@ -519,17 +519,49 @@ function generateRoomId(prefix = "room") {
   return `${prefix}_${crypto.randomBytes(4).toString("hex")}`;
 }
 
+function generateRoomCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    let code = "";
+    for (let index = 0; index < 5; index += 1) {
+      code += alphabet[crypto.randomInt(alphabet.length)];
+    }
+    if (!findRoomByCode(code)) {
+      return code;
+    }
+  }
+  return crypto.randomBytes(4).toString("hex").slice(0, 5).toUpperCase();
+}
+
+function normalizeRoomCode(code = "") {
+  return String(code || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 5);
+}
+
+function findRoomByCode(code = "") {
+  const normalizedCode = normalizeRoomCode(code);
+  if (normalizedCode.length !== 5) {
+    return null;
+  }
+  return Array.from(rooms.values()).find((room) => room.state.mode === "custom" && room.state.code === normalizedCode) || null;
+}
+
 function createRoom({
   roomId = generateRoomId("room"),
   name = "",
   region = SERVER_REGION,
   mode = "public",
-  config = roomConfigDefaults()
+  config = roomConfigDefaults(),
+  code = ""
 } = {}) {
   const normalizedRegion = normalizeRoomRegion(region);
   const normalizedConfig = normalizeRoomConfig(config, mode === "custom");
   const roomName = mode === "custom" ? String(name || "Custom Colony").slice(0, 28) : "Public Arena";
   const roomState = createRoomState(roomId, roomName, normalizedRegion, mode, normalizedConfig);
+  roomState.code = mode === "custom" ? normalizeRoomCode(code) || generateRoomCode() : roomId;
   const room = {
     id: roomId,
     state: roomState,
@@ -615,6 +647,66 @@ function findPlayerBySessionToken(sessionToken) {
   return null;
 }
 
+function closeSocketQuietly(socket, code, reason) {
+  try {
+    if (socket && socket.readyState < 2) {
+      socket.close(code, reason);
+    }
+  } catch {}
+}
+
+function removePlayerFromRoom(room, player, reason = "Session replaced") {
+  if (!room?.state || !player || !room.state.players.has(player.id)) {
+    return false;
+  }
+
+  closeSocketQuietly(player.socket, 4002, reason);
+  room.state.players.delete(player.id);
+  playerRoomIndex.delete(player.id);
+  room.state.lastActiveAt = Date.now();
+  withRoomState(room, () => {
+    bumpLeaderboardVersion();
+    pushEvent("leave", { playerId: player.id, name: player.name });
+  });
+  return true;
+}
+
+function removeSpectatorFromRoom(room, spectator, reason = "Session replaced") {
+  if (!room?.state || !spectator || !room.state.spectators.has(spectator.id)) {
+    return false;
+  }
+
+  closeSocketQuietly(spectator.socket, 4002, reason);
+  room.state.spectators.delete(spectator.id);
+  spectatorRoomIndex.delete(spectator.id);
+  room.state.lastActiveAt = Date.now();
+  return true;
+}
+
+function removePlayersForSession(sessionToken, reason = "Session replaced") {
+  let removed = 0;
+  for (const room of rooms.values()) {
+    for (const player of Array.from(room.state.players.values())) {
+      if (player.sessionToken === sessionToken && removePlayerFromRoom(room, player, reason)) {
+        removed += 1;
+      }
+    }
+  }
+  return removed;
+}
+
+function removeSpectatorsForSession(sessionToken, reason = "Session replaced") {
+  let removed = 0;
+  for (const room of rooms.values()) {
+    for (const spectator of Array.from(room.state.spectators.values())) {
+      if (spectator.sessionToken === sessionToken && removeSpectatorFromRoom(room, spectator, reason)) {
+        removed += 1;
+      }
+    }
+  }
+  return removed;
+}
+
 function allLivePlayers() {
   const players = [];
   for (const room of rooms.values()) {
@@ -631,6 +723,7 @@ function roomSummary(roomState) {
     name: roomDisplayName(roomState),
     region: roomState.region,
     mode: roomState.mode,
+    code: roomState.mode === "custom" ? roomState.code : "",
     players: roomState.players.size,
     spectators: roomState.spectators.size,
     config: { ...roomState.config },
@@ -2178,6 +2271,7 @@ function serializePublicPlayer(player) {
     healthMax: Math.round(player.healthMax),
     score: Math.round(player.score),
     killStreak: Math.floor(player.killStreak || 0),
+    commandRange: Math.round(player.commandRange || COMMAND_RANGE_BASE),
     alive: player.alive,
     spawnProtectedMs: Math.max(0, (player.spawnGraceUntil || 0) - Date.now()),
     workers: player.workers.map((worker) => ({
@@ -3247,6 +3341,7 @@ function snapshotForViewer({
       version: RELEASE_LABEL,
       versionInfo: versionPayload(),
       roomId: state.id,
+      roomCode: state.mode === "custom" ? state.code : "",
       roomName: roomDisplayName(state),
       roomRegion: state.region,
       roomMode: state.mode
@@ -3988,6 +4083,10 @@ function resolveRequestedRoom(payload = {}) {
   const roomMode = String(payload.roomMode || "public").trim().toLowerCase();
   const roomRegion = normalizeRoomRegion(payload.roomRegion || SERVER_REGION);
   if (roomMode === "custom") {
+    const codedRoom = findRoomByCode(payload.roomCode);
+    if (codedRoom) {
+      return codedRoom;
+    }
     const requestedRoom = getRoomById(payload.roomId);
     if (requestedRoom) {
       return requestedRoom;
@@ -4003,6 +4102,22 @@ function resolveRequestedRoom(payload = {}) {
   return ensurePublicArenaRoom(roomRegion);
 }
 
+function resolveSpectateRoom(payload = {}) {
+  const requestedRoom = resolveRequestedRoom(payload);
+  if (requestedRoom?.state?.players.size > 0) {
+    return requestedRoom;
+  }
+
+  const populatedStates = allRoomStates().filter((roomState) => roomState.players.size > 0);
+  if (!populatedStates.length) {
+    return requestedRoom;
+  }
+
+  populatedStates.sort((left, right) => right.players.size - left.players.size);
+  const fallbackRoom = rooms.get(populatedStates[0].id);
+  return fallbackRoom || requestedRoom;
+}
+
 function handleJoin(request, response, payload) {
   const session = resolveSession(request, payload);
 
@@ -4014,14 +4129,27 @@ function handleJoin(request, response, payload) {
     return;
   }
 
-  for (const roomState of allRoomStates()) {
-    const existingPlayer = Array.from(roomState.players.values()).find((player) => player.sessionToken === session.token);
-    if (existingPlayer) {
+  const replaceSession = Boolean(payload.replaceSession);
+  if (replaceSession) {
+    removeSpectatorsForSession(session.token, "Joining arena");
+    removePlayersForSession(session.token, "Joining arena");
+  } else {
+    for (const roomState of allRoomStates()) {
+      const existingPlayer = Array.from(roomState.players.values()).find((player) => player.sessionToken === session.token);
+      if (!existingPlayer) {
+        continue;
+      }
       sendJson(response, 409, {
         error: `This profile is already in ${roomDisplayName(roomState)}. Return to that session or leave it first.`
       });
       return;
     }
+  }
+
+  const requestedRoomCode = normalizeRoomCode(payload.roomCode);
+  if (String(payload.roomMode || "").toLowerCase() === "custom" && requestedRoomCode && !findRoomByCode(requestedRoomCode)) {
+    sendJson(response, 404, { error: `No custom room found for code ${requestedRoomCode}.` });
+    return;
   }
 
   const room = resolveRequestedRoom(payload);
@@ -4101,7 +4229,18 @@ function handleSpectate(request, response, payload) {
     return;
   }
 
-  const room = resolveRequestedRoom(payload);
+  if (payload.replaceSession) {
+    removePlayersForSession(session.token, "Switching to spectate");
+    removeSpectatorsForSession(session.token, "Switching to spectate");
+  }
+
+  const requestedRoomCode = normalizeRoomCode(payload.roomCode);
+  if (String(payload.roomMode || "").toLowerCase() === "custom" && requestedRoomCode && !findRoomByCode(requestedRoomCode)) {
+    sendJson(response, 404, { error: `No custom room found for code ${requestedRoomCode}.` });
+    return;
+  }
+
+  const room = resolveSpectateRoom(payload);
   const spectator = createSpectatorSession(session, room.id);
   room.state.lastActiveAt = Date.now();
   sendJson(response, 200, {

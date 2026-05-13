@@ -151,12 +151,69 @@ async function main() {
       csrfToken: authMe.csrfToken,
       body: {
         roomMode: "public",
-        roomRegion: "singapore"
+        roomRegion: "singapore",
+        replaceSession: true
       }
     });
 
     const playerWs = await connectWebSocket(`${WS_HOST}?playerId=${encodeURIComponent(join.playerId)}`);
+    const spectatorTargetGuest = await request("/auth/guest", {
+      method: "POST",
+      body: {
+        name: "Watch Target",
+        starterSkin: "moss"
+      }
+    });
+    const spectatorTargetMe = await request("/auth/me", {
+      token: spectatorTargetGuest.authToken
+    });
+    const spectatorTargetJoin = await request("/join", {
+      method: "POST",
+      token: spectatorTargetGuest.authToken,
+      csrfToken: spectatorTargetMe.csrfToken,
+      body: {
+        roomMode: "public",
+        roomRegion: "singapore",
+        replaceSession: true
+      }
+    });
+    const spectatorTargetWs = await connectWebSocket(`${WS_HOST}?playerId=${encodeURIComponent(spectatorTargetJoin.playerId)}`);
+    const switchedSpectate = await request("/spectate", {
+      method: "POST",
+      token: register.authToken,
+      csrfToken: authMe.csrfToken,
+      body: {
+        roomMode: "public",
+        roomRegion: "singapore",
+        replaceSession: true
+      }
+    });
+
+    const switchedSpectatorWs = await connectWebSocket(`${WS_HOST}?spectatorId=${encodeURIComponent(switchedSpectate.spectatorId)}`);
+    const switchedSpectatorState = await waitForSocketMessage(
+      switchedSpectatorWs.socket,
+      (payload) => payload.type === "state" && payload.spectator?.active && payload.players?.some((player) => Number.isFinite(player.commandRange))
+    );
+    if (!switchedSpectatorState.spectator.focusPlayerId) {
+      throw new Error("Spectator state did not include a focused player.");
+    }
+
+    const rejoin = await request("/join", {
+      method: "POST",
+      token: register.authToken,
+      csrfToken: authMe.csrfToken,
+      body: {
+        roomMode: "public",
+        roomRegion: "singapore",
+        replaceSession: true
+      }
+    });
+
+    const rejoinWs = await connectWebSocket(`${WS_HOST}?playerId=${encodeURIComponent(rejoin.playerId)}`);
     playerWs.socket.close();
+    switchedSpectatorWs.socket.close();
+    rejoinWs.socket.close();
+    spectatorTargetWs.socket.close();
     await wait(250);
 
     const customJoin = await request("/join", {
@@ -166,6 +223,7 @@ async function main() {
       body: {
         roomMode: "custom",
         roomRegion: "singapore",
+        replaceSession: true,
         roomName: "Smoke Movement",
         roomConfig: {
           maxPlayers: 8,
@@ -176,8 +234,41 @@ async function main() {
       }
     });
 
+    if (!/^[A-Z0-9]{5}$/.test(customJoin.room?.code || "")) {
+      throw new Error("Custom room did not return a 5-character private code.");
+    }
+
+    const codeJoinGuest = await request("/auth/guest", {
+      method: "POST",
+      body: {
+        name: "Code Guest",
+        starterSkin: "tide"
+      }
+    });
+    const codeJoinMe = await request("/auth/me", {
+      token: codeJoinGuest.authToken
+    });
+    const codeJoin = await request("/join", {
+      method: "POST",
+      token: codeJoinGuest.authToken,
+      csrfToken: codeJoinMe.csrfToken,
+      body: {
+        roomMode: "custom",
+        roomRegion: "singapore",
+        roomCode: customJoin.room.code,
+        replaceSession: true
+      }
+    });
+    if (codeJoin.room?.id !== customJoin.room.id) {
+      throw new Error("Joining by private room code did not enter the original custom room.");
+    }
+    const codeJoinWs = await connectWebSocket(`${WS_HOST}?playerId=${encodeURIComponent(codeJoin.playerId)}`);
+
     const customWs = await connectWebSocket(`${WS_HOST}?playerId=${encodeURIComponent(customJoin.playerId)}`);
     const initialCustomState = await waitForSocketMessage(customWs.socket, (payload) => payload.type === "state" && payload.you === customJoin.playerId);
+    if (initialCustomState.config?.roomCode !== customJoin.room.code) {
+      throw new Error("Custom room snapshot did not expose the private room code.");
+    }
     const initialPlayer = initialCustomState.players.find((player) => player.id === customJoin.playerId);
     if (!initialPlayer) {
       throw new Error("Custom room player missing from initial state.");
@@ -212,6 +303,7 @@ async function main() {
     if (!movedPlayer || movedPlayer.x <= initialPlayer.x + 4) {
       throw new Error("Custom room player did not move after input.");
     }
+    codeJoinWs.socket.close();
     customWs.socket.close();
     await wait(250);
 
@@ -222,6 +314,7 @@ async function main() {
       body: {
         roomMode: "custom",
         roomRegion: "singapore",
+        replaceSession: true,
         roomName: "Smoke Custom",
         roomConfig: {
           maxPlayers: 12,
@@ -233,6 +326,13 @@ async function main() {
     });
 
     const spectatorWs = await connectWebSocket(`${WS_HOST}?spectatorId=${encodeURIComponent(spectate.spectatorId)}`);
+    const spectatorState = await waitForSocketMessage(
+      spectatorWs.socket,
+      (payload) => payload.type === "state" && payload.spectator?.active && Array.isArray(payload.players)
+    );
+    if (spectatorState.players.some((player) => !Number.isFinite(player.commandRange))) {
+      throw new Error("Spectator players must include finite command ranges for camera zoom.");
+    }
     spectatorWs.socket.close();
 
     const adminLogin = await request("/auth/login", {

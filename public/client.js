@@ -11,6 +11,7 @@ const patchNotesButton = document.getElementById("patchNotesButton");
 const patchNotesCard = document.getElementById("patchNotesCard");
 const closePatchNotesButton = document.getElementById("closePatchNotesButton");
 const networkPanel = document.getElementById("networkPanel");
+const roomCodeBadge = document.getElementById("roomCodeBadge");
 const optionsToggleButton = document.getElementById("optionsToggleButton");
 const adminPanel = document.getElementById("adminPanel");
 const adminNetworkDashboard = document.getElementById("adminNetworkDashboard");
@@ -38,12 +39,17 @@ const authUnauthed = document.getElementById("authUnauthed");
 const authAuthed = document.getElementById("authAuthed");
 const profileSummary = document.getElementById("profileSummary");
 const roomModeSelect = document.getElementById("roomModeSelect");
+const roomModeButtons = Array.from(document.querySelectorAll("[data-room-mode-value]"));
 const roomRegionLabel = document.getElementById("roomRegionLabel");
 const roomRegionSelect = document.getElementById("roomRegionSelect");
 const roomNameLabel = document.getElementById("roomNameLabel");
 const roomNameInput = document.getElementById("roomNameInput");
 const roomPickerLabel = document.getElementById("roomPickerLabel");
 const roomPickerSelect = document.getElementById("roomPickerSelect");
+const roomCodeLabel = document.getElementById("roomCodeLabel");
+const roomCodeInput = document.getElementById("roomCodeInput");
+const createPrivateRoomButton = document.getElementById("createPrivateRoomButton");
+const joinPrivateRoomButton = document.getElementById("joinPrivateRoomButton");
 const roomMaxPlayersInput = document.getElementById("roomMaxPlayersInput");
 const roomFoodTargetInput = document.getElementById("roomFoodTargetInput");
 const roomGrowthTargetInput = document.getElementById("roomGrowthTargetInput");
@@ -257,6 +263,7 @@ const clientState = {
     mode: "public",
     region: "singapore",
     roomId: "",
+    roomCode: "",
     roomName: "Custom Colony",
     roomConfig: {
       maxPlayers: 16,
@@ -275,6 +282,7 @@ const clientState = {
   playerId: null,
   spectatorId: null,
   socket: null,
+  socketMode: "player",
   snapshot: null,
   renderSnapshot: null,
   cardSelectionPending: false,
@@ -326,6 +334,28 @@ const clientState = {
     uiPrimed: false
   }
 };
+
+function closeCurrentSocket(reason = "Client session transition") {
+  const socket = clientState.socket;
+  if (!socket) {
+    return;
+  }
+
+  if (clientState.socket === socket) {
+    clientState.socket = null;
+  }
+  clientState.connected = false;
+  if (clientState.pingTimer) {
+    clearInterval(clientState.pingTimer);
+    clientState.pingTimer = null;
+  }
+
+  try {
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      socket.close(1000, reason);
+    }
+  } catch {}
+}
 
 function resizeCanvas() {
   viewport.width = window.innerWidth;
@@ -672,7 +702,7 @@ function effectiveViewportHeight() {
 }
 
 function scaleWorld(value) {
-  return value * worldRenderScale();
+  return (Number.isFinite(value) ? value : 0) * worldRenderScale();
 }
 
 function worldToScreen(x, y) {
@@ -690,7 +720,8 @@ function screenToWorld(x, y) {
 }
 
 function desiredZoomForPlayer(player) {
-  const requiredDiameter = Math.max(420, player.commandRange * WORKER_RANGE_VIEW_MULTIPLIER);
+  const commandRange = Number.isFinite(player?.commandRange) ? player.commandRange : 220;
+  const requiredDiameter = Math.max(420, commandRange * WORKER_RANGE_VIEW_MULTIPLIER);
   const fitWidthZoom = (effectiveViewportWidth() * 0.8) / requiredDiameter;
   const fitHeightZoom = (effectiveViewportHeight() * 0.7) / requiredDiameter;
   return Math.max(MIN_WORLD_ZOOM, Math.min(BASE_WORLD_ZOOM, fitWidthZoom, fitHeightZoom));
@@ -858,15 +889,24 @@ function getPlayerFromSnapshot(snapshot, playerId = clientState.playerId) {
   return snapshot?.players.find((player) => player.id === playerId) || null;
 }
 
-function aliveSpectateCandidates(snapshot = currentSnapshot()) {
+function spectateCandidates(snapshot = currentSnapshot()) {
   const selfId = clientState.playerId;
-  return (snapshot?.players || [])
-    .filter((player) => player.alive && player.id !== selfId)
-    .sort((left, right) => right.score - left.score);
+  const players = snapshot?.players || [];
+  const alive = players.filter((player) => player.alive && player.id !== selfId);
+  if (alive.length) {
+    return alive.sort((left, right) => right.score - left.score);
+  }
+
+  const others = players.filter((player) => player.id !== selfId);
+  if (others.length) {
+    return others.sort((left, right) => right.score - left.score);
+  }
+
+  return players.slice().sort((left, right) => right.score - left.score);
 }
 
 function getSpectateTarget(snapshot = currentSnapshot()) {
-  const candidates = aliveSpectateCandidates(snapshot);
+  const candidates = spectateCandidates(snapshot);
   if (!candidates.length) {
     return null;
   }
@@ -944,7 +984,11 @@ function smoothPlayerState(currentPlayer, targetPlayer) {
   currentPlayer.health = smoothStep(currentPlayer.health, targetPlayer.health, ENTITY_SMOOTHING);
   currentPlayer.healthMax = smoothStep(currentPlayer.healthMax, targetPlayer.healthMax, ENTITY_SMOOTHING);
   currentPlayer.score = smoothStep(currentPlayer.score, targetPlayer.score, ENTITY_SMOOTHING);
-  currentPlayer.commandRange = smoothStep(currentPlayer.commandRange, targetPlayer.commandRange, ENTITY_SMOOTHING);
+  currentPlayer.commandRange = smoothStep(
+    Number.isFinite(currentPlayer.commandRange) ? currentPlayer.commandRange : targetPlayer.commandRange,
+    Number.isFinite(targetPlayer.commandRange) ? targetPlayer.commandRange : 220,
+    ENTITY_SMOOTHING
+  );
   currentPlayer.commandX = smoothStep(currentPlayer.commandX, targetPlayer.commandX, ENTITY_SMOOTHING);
   currentPlayer.commandY = smoothStep(currentPlayer.commandY, targetPlayer.commandY, ENTITY_SMOOTHING);
   currentPlayer.eggs = targetPlayer.eggs;
@@ -1302,6 +1346,7 @@ function readRoomSelectionFromUi() {
   clientState.roomSelection.mode = roomModeSelect?.value === "custom" ? "custom" : "public";
   clientState.roomSelection.region = roomRegionSelect?.value || clientState.roomSelection.region || "singapore";
   clientState.roomSelection.roomId = roomPickerSelect?.value || "";
+  clientState.roomSelection.roomCode = (roomCodeInput?.value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
   clientState.roomSelection.roomName = (roomNameInput?.value || "Custom Colony").trim() || "Custom Colony";
   clientState.roomSelection.roomConfig = {
     maxPlayers: Number(roomMaxPlayersInput?.value || 16),
@@ -1322,6 +1367,11 @@ function renderRoomSelection() {
   if (roomModeSelect) {
     roomModeSelect.value = selection.mode;
   }
+  roomModeButtons.forEach((button) => {
+    const active = button.dataset.roomModeValue === selection.mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
   if (roomRegionSelect) {
     roomRegionSelect.innerHTML = (clientState.supportedRegions || ["singapore"])
       .map((region) => `<option value="${escapeHtml(region)}">${escapeHtml(region)}</option>`)
@@ -1330,6 +1380,9 @@ function renderRoomSelection() {
   }
   if (roomNameInput) {
     roomNameInput.value = selection.roomName || "Custom Colony";
+  }
+  if (roomCodeInput) {
+    roomCodeInput.value = selection.roomCode || "";
   }
   if (roomPickerSelect) {
     const matchingRooms = (clientState.availableRooms || []).filter((room) => room.mode === "custom");
@@ -1376,16 +1429,26 @@ function renderRoomSelection() {
 
   const customMode = selection.mode === "custom";
   document.querySelector(".room-grid")?.classList.toggle("hidden", !customMode);
-  document.querySelectorAll(".room-grid label").forEach((label) => {
-    label.classList.toggle("hidden", !customMode);
+  document.querySelectorAll(".room-section").forEach((section) => {
+    section.classList.toggle("hidden", !customMode);
   });
+  roomRegionLabel?.classList.toggle("hidden", false);
   roomNameLabel?.classList.toggle("hidden", !customMode);
-  roomPickerLabel?.classList.toggle("hidden", !customMode);
+  roomCodeLabel?.classList.toggle("hidden", !customMode);
+  createPrivateRoomButton?.classList.toggle("hidden", !customMode);
+  joinPrivateRoomButton?.classList.toggle("hidden", !customMode);
+  roomPickerLabel?.classList.add("hidden");
   if (roomListSummary) {
     const customRooms = (clientState.availableRooms || []).filter((room) => room.mode === "custom");
+    const codeCopy = selection.roomCode
+      ? `Joining private room ${selection.roomCode}.`
+      : "Creating a new private room will generate a 5-character invite code.";
     roomListSummary.textContent = customMode
-      ? `${customRooms.length} custom game${customRooms.length === 1 ? "" : "s"} available. Select one, or leave it empty to create a new custom game.`
+      ? `${codeCopy} ${customRooms.length} private room${customRooms.length === 1 ? "" : "s"} currently active.`
       : "Play joins the public arena automatically. A new public lobby is created only when the active one is full.";
+  }
+  if (enterArenaButton) {
+    enterArenaButton.textContent = customMode ? (selection.roomCode ? "Join With Code" : "Create Private Room") : "Play Public Arena";
   }
 }
 
@@ -1899,9 +1962,7 @@ async function logout() {
     // Ignore logout transport errors and clear local session anyway.
   }
 
-  if (clientState.socket) {
-    clientState.socket.close();
-  }
+  closeCurrentSocket("Logging out");
   if (clientState.pingTimer) {
     clearInterval(clientState.pingTimer);
     clientState.pingTimer = null;
@@ -1932,9 +1993,7 @@ async function logout() {
 }
 
 function returnToMainMenu() {
-  if (clientState.socket) {
-    clientState.socket.close();
-  }
+  closeCurrentSocket("Returning to main menu");
   if (clientState.pingTimer) {
     clearInterval(clientState.pingTimer);
     clientState.pingTimer = null;
@@ -1988,9 +2047,8 @@ async function startSpectating() {
   }
 
   try {
-    if (clientState.socket && clientState.socket.readyState !== WebSocket.CLOSED) {
-      clientState.socket.close(1000, "Switching to spectate");
-    }
+    closeCurrentSocket("Switching to spectate");
+    clientState.connected = false;
     spectateButton.disabled = true;
     setStatus("Finding a hive to watch...");
     const payload = await apiRequest("/spectate", {
@@ -2009,7 +2067,15 @@ async function startSpectating() {
     clientState.spectatorFocusId = null;
     clientState.profile = payload.profile;
     if (payload.room) {
-      setStatus(`Spectating ${payload.room.name} in ${payload.room.region}.`);
+      if (payload.room.mode === "custom" && payload.room.code) {
+        clientState.roomSelection.roomCode = payload.room.code;
+        renderRoomSelection();
+      }
+      setStatus(
+        payload.room.mode === "custom" && payload.room.code
+          ? `Spectating ${payload.room.name} (${payload.room.code}) in ${payload.room.region}.`
+          : `Spectating ${payload.room.name} in ${payload.room.region}.`
+      );
     }
     connectSocket("spectator");
   } catch (error) {
@@ -2347,18 +2413,19 @@ function renderNetworkPanel() {
     return;
   }
 
-  const snapshot = clientState.snapshot;
-  const onlinePlayers = snapshot?.config?.onlinePlayers ?? snapshot?.players?.length ?? 0;
-  const targetSnapRate = snapshot?.config?.broadcastRate ?? 0;
-  const versionLabel = snapshot?.config?.version ? ` | ${snapshot.config.version}` : "";
-  networkPanel.textContent =
-    `Ping ${Math.round(clientState.network.pingMs || 0)}ms` +
-    ` | Jitter ${Math.round(clientState.network.jitterMs || 0)}ms` +
-    ` | Snap ${Math.max(0, clientState.network.snapshotsPerSecond || 0).toFixed(1)}/${targetSnapRate}` +
-    ` | In ${Math.max(0, clientState.network.inLossPct || 0).toFixed(1)}%` +
-    ` | Out ${Math.max(0, clientState.network.outLossPct || 0).toFixed(1)}%` +
-    ` | Online ${onlinePlayers}` +
-    versionLabel;
+  networkPanel.textContent = `Ping ${Math.round(clientState.network.pingMs || 0)}ms`;
+}
+
+function renderRoomCodeBadge() {
+  if (!roomCodeBadge) {
+    return;
+  }
+
+  const snapshotCode = clientState.snapshot?.config?.roomCode || "";
+  const localCode = clientState.roomSelection.mode === "custom" ? clientState.roomSelection.roomCode || "" : "";
+  const code = snapshotCode || localCode;
+  roomCodeBadge.classList.toggle("hidden", !code);
+  roomCodeBadge.textContent = code ? `Room Code ${code}` : "";
 }
 
 function renderKillFeed() {
@@ -2442,6 +2509,152 @@ function hideBuffTooltip() {
   buffTooltip.classList.add("hidden");
 }
 
+function drawStatusPill(text, x, y, options = {}) {
+  const paddingX = options.paddingX ?? 10;
+  const height = options.height ?? 28;
+  context.font = options.font || "800 12px Manrope";
+  const width = Math.ceil(context.measureText(text).width + paddingX * 2);
+
+  context.beginPath();
+  context.fillStyle = options.fill || "rgba(255, 255, 255, 0.08)";
+  context.strokeStyle = options.stroke || "rgba(255, 255, 255, 0.1)";
+  context.lineWidth = 1;
+  context.roundRect(x, y, width, height, height / 2);
+  context.fill();
+  context.stroke();
+
+  context.fillStyle = options.color || "#fff8df";
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  context.fillText(text, x + paddingX, y + height / 2 + 0.5);
+  return width;
+}
+
+function renderPlayerStatusHud(player, profile, round) {
+  const skin = getSkin(profile?.selectedSkin || player.skinId);
+  const roundedScore = Math.round(player.score || 0);
+  const roundedHealth = Math.round(player.health || 0);
+  const roundedHealthMax = Math.max(1, Math.round(player.healthMax || 1));
+  const healthRatio = Math.max(0, Math.min(1, roundedHealth / roundedHealthMax));
+  const mergeCooldown = Math.max(0, Math.ceil((player.mergeCooldownMs || 0) / 1000));
+  const splitCooldown = Math.max(0, Math.ceil((player.splitCooldownMs || 0) / 1000));
+  const matchProgress = player.matchXpForNextLevel
+    ? `${Math.round(player.matchXpIntoLevel || 0)}/${Math.round(player.matchXpForNextLevel)} XP`
+    : "Max XP";
+  const cardChoice = (player.pendingCardChoices || [])[0] || null;
+  const rewardText = cardChoice
+    ? `Card ready: Lv ${cardChoice.rewardLevel} ${CARD_RARITY_LABELS[cardChoice.rarity]}`
+    : player.nextCardRewardLevel
+      ? `Next card reward at Run Lv ${player.nextCardRewardLevel}`
+      : "All card rewards claimed";
+
+  const x = 18;
+  const y = viewport.width <= 700 ? 136 : 156;
+  const width = Math.min(460, Math.max(360, viewport.width - 36));
+  const height = 196;
+
+  context.save();
+  context.shadowColor = "rgba(0, 0, 0, 0.34)";
+  context.shadowBlur = 24;
+  context.shadowOffsetY = 10;
+  context.beginPath();
+  context.fillStyle = "rgba(10, 8, 24, 0.78)";
+  context.strokeStyle = "rgba(255, 255, 255, 0.12)";
+  context.lineWidth = 1;
+  context.roundRect(x, y, width, height, 22);
+  context.fill();
+  context.stroke();
+  context.restore();
+
+  context.save();
+  const glow = context.createRadialGradient(x + width - 34, y + 28, 4, x + width - 34, y + 28, 118);
+  glow.addColorStop(0, `${skin.primary}66`);
+  glow.addColorStop(1, "rgba(255,255,255,0)");
+  context.fillStyle = glow;
+  context.beginPath();
+  context.roundRect(x, y, width, height, 22);
+  context.fill();
+  context.restore();
+
+  context.fillStyle = "#fff8df";
+  context.textAlign = "left";
+  context.textBaseline = "alphabetic";
+  context.font = "800 13px Manrope";
+  context.fillStyle = "rgba(247, 241, 217, 0.72)";
+  context.fillText("HIVE STATUS", x + 16, y + 24);
+
+  context.font = "800 27px Cinzel";
+  context.fillStyle = "#fff8df";
+  context.fillText(formatCompactNumber(roundedScore), x + 16, y + 58);
+  context.font = "900 11px Manrope";
+  context.fillStyle = skin.primary;
+  context.fillText("SCORE", x + 18, y + 75);
+
+  context.font = "900 16px Manrope";
+  context.fillStyle = "#fff8df";
+  context.textAlign = "right";
+  context.fillText(`Run Lv ${player.level}`, x + width - 16, y + 42);
+  context.font = "800 12px Manrope";
+  context.fillStyle = "rgba(247, 241, 217, 0.7)";
+  context.fillText(matchProgress, x + width - 16, y + 62);
+  context.textAlign = "left";
+
+  const barX = x + 16;
+  const barY = y + 88;
+  const barWidth = width - 32;
+  const barHeight = 12;
+  context.beginPath();
+  context.fillStyle = "rgba(255, 255, 255, 0.1)";
+  context.roundRect(barX, barY, barWidth, barHeight, 999);
+  context.fill();
+  context.beginPath();
+  const healthGradient = context.createLinearGradient(barX, 0, barX + barWidth, 0);
+  healthGradient.addColorStop(0, "#48f0a4");
+  healthGradient.addColorStop(1, skin.primary);
+  context.fillStyle = healthGradient;
+  context.roundRect(barX, barY, barWidth * healthRatio, barHeight, 999);
+  context.fill();
+  context.font = "900 11px Manrope";
+  context.fillStyle = "#fff8df";
+  context.fillText(`HP ${roundedHealth}/${roundedHealthMax}`, barX, barY - 6);
+
+  let chipY = y + 112;
+  let chipX = x + 16;
+  const chips = [
+    `Workers ${player.workers.length}/${player.maxWorkers}`,
+    `Eggs ${player.eggs}/${player.maxEggs}`,
+    `Radius ${Math.round(player.radius || 0)}`,
+    `Command ${Math.round(player.commandRange || 0)}`,
+    mergeCooldown > 0 ? `Merge ${mergeCooldown}s` : "Merge Ready",
+    splitCooldown > 0 ? `Split ${splitCooldown}s` : "Split Ready"
+  ];
+
+  for (const chip of chips) {
+    context.font = "800 12px Manrope";
+    const measuredChipWidth = Math.ceil(context.measureText(chip).width + 20);
+    if (chipX + measuredChipWidth > x + width - 16) {
+      chipX = x + 16;
+      chipY += 32;
+    }
+    const chipWidth = drawStatusPill(chip, chipX, chipY, {
+      fill: chip.includes("Ready") ? "rgba(72, 240, 164, 0.13)" : "rgba(255, 255, 255, 0.08)",
+      stroke: chip.includes("Ready") ? "rgba(72, 240, 164, 0.22)" : "rgba(255, 255, 255, 0.1)",
+      color: chip.includes("Ready") ? "#bfffe0" : "#fff8df"
+    });
+    chipX += chipWidth + 7;
+  }
+
+  context.font = "800 12px Manrope";
+  context.fillStyle = cardChoice ? "#ffd36a" : "rgba(247, 241, 217, 0.72)";
+  context.fillText(rewardText, x + 16, y + 184);
+  if (round) {
+    context.textAlign = "right";
+    context.fillStyle = "rgba(247, 241, 217, 0.68)";
+    context.fillText(`Round ${round.number} | ${formatCompactNumber(currentSnapshot().config.roundScoreTarget)} target`, x + width - 16, y + 184);
+    context.textAlign = "left";
+  }
+}
+
 function renderOverlay() {
   const you = getYou();
   const round = clientState.snapshot?.round;
@@ -2475,47 +2688,7 @@ function renderOverlay() {
     return;
   }
 
-  const profile = clientState.profile;
-  const roundedScore = Math.round(you.score || 0);
-  const roundedHealth = Math.round(you.health || 0);
-  const roundedHealthMax = Math.round(you.healthMax || 0);
-  const roundedRadius = Math.round(you.radius || 0);
-  const roundedCommand = Math.round(you.commandRange || 0);
-  const matchProgress = you.matchXpForNextLevel ? `${Math.round(you.matchXpIntoLevel || 0)}/${Math.round(you.matchXpForNextLevel)}` : "Max";
-  const hudLeft = 20;
-  const hudTop = 196;
-  context.fillStyle = "rgba(255,255,255,0.92)";
-  context.font = "800 18px Cinzel";
-  context.textAlign = "left";
-  context.fillText(`Score ${roundedScore}`, hudLeft, hudTop);
-  context.font = "700 15px Manrope";
-  context.fillText(`Health ${roundedHealth}/${roundedHealthMax} | Radius ${roundedRadius} | Command ${roundedCommand}`, hudLeft, hudTop + 22);
-  const mergeCooldown = Math.max(0, Math.ceil((you.mergeCooldownMs || 0) / 1000));
-  const splitCooldown = Math.max(0, Math.ceil((you.splitCooldownMs || 0) / 1000));
-  const mergeStatus = mergeCooldown > 0 ? `Merge ${mergeCooldown}s` : "Merge Ready";
-  const splitStatus = splitCooldown > 0 ? `Split ${splitCooldown}s` : "Split Ready";
-  context.fillText(
-    `Workers ${you.workers.length}/${you.maxWorkers} | Eggs ${you.eggs}/${you.maxEggs} | ${mergeStatus} | ${splitStatus}`,
-    hudLeft,
-    hudTop + 44
-  );
-  if (profile) {
-    const identityLabel = `Run Lv ${you.level}`;
-    const skin = getSkin(profile.selectedSkin);
-    context.fillText(`${identityLabel} | Match XP ${matchProgress} | Skin ${skin.name}`, hudLeft, hudTop + 66);
-    if ((you.pendingCardChoices || []).length) {
-      context.fillText(
-        `Card Pick Ready | Lv ${you.pendingCardChoices[0].rewardLevel} ${CARD_RARITY_LABELS[you.pendingCardChoices[0].rarity]}`,
-        hudLeft,
-        hudTop + 88
-      );
-    } else if (you.nextCardRewardLevel) {
-      context.fillText(`Next card reward at Run Lv ${you.nextCardRewardLevel}`, hudLeft, hudTop + 88);
-    }
-  }
-  if (round) {
-    context.fillText(`Round ${round.number} | Target ${currentSnapshot().config.roundScoreTarget} score`, hudLeft, hudTop + 110);
-  }
+  renderPlayerStatusHud(you, clientState.profile, round);
 
   if (round?.status === "ended") {
     context.fillStyle = "rgba(7, 6, 20, 0.72)";
@@ -2571,10 +2744,21 @@ function drawFrame() {
         : you;
 
     if (cameraTarget) {
+      if (!Number.isFinite(clientState.camera.x)) {
+        clientState.camera.x = cameraTarget.x;
+      }
+      if (!Number.isFinite(clientState.camera.y)) {
+        clientState.camera.y = cameraTarget.y;
+      }
+      if (!Number.isFinite(clientState.camera.zoom)) {
+        clientState.camera.zoom = BASE_WORLD_ZOOM;
+      }
       clientState.camera.x += (cameraTarget.x - clientState.camera.x) * CAMERA_SMOOTHING;
       clientState.camera.y += (cameraTarget.y - clientState.camera.y) * CAMERA_SMOOTHING;
       const desiredZoom = desiredZoomForPlayer(cameraTarget);
-      clientState.camera.zoom += (desiredZoom - clientState.camera.zoom) * ZOOM_SMOOTHING;
+      if (Number.isFinite(desiredZoom)) {
+        clientState.camera.zoom += (desiredZoom - clientState.camera.zoom) * ZOOM_SMOOTHING;
+      }
     }
 
     renderWorldBounds(snapshot);
@@ -2586,6 +2770,7 @@ function drawFrame() {
   }
 
   renderOverlay();
+  renderRoomCodeBadge();
   renderNetworkPanel();
   renderKillFeed();
   requestAnimationFrame(drawFrame);
@@ -2604,17 +2789,6 @@ function renderStats() {
   }
 
   renderActiveBuffs(getYou() || getPlayerFromSnapshot(snapshot));
-  const you = getYou();
-  if (you) {
-    const streak = Math.floor(you.killStreak || 0);
-    playerStats.innerHTML = `
-      <div class="stat-card you">
-        <div class="stat-row"><span>Score</span><strong>${formatCompactNumber(you.score)}</strong></div>
-        <div class="stat-row"><span>Run Lv</span><strong>${you.level}</strong></div>
-        <div class="stat-row"><span>Kill streak</span><strong>${streak}x</strong></div>
-      </div>
-    `;
-  }
 
   for (const entry of snapshot.leaderboard) {
     const item = document.createElement("li");
@@ -2629,9 +2803,11 @@ function currentRoomRequestBody() {
   const selection = clientState.roomSelection;
   return {
     authToken: clientState.authToken,
+    replaceSession: true,
     roomMode: selection.mode,
     roomRegion: selection.region,
     roomId: selection.mode === "custom" ? selection.roomId || "" : "",
+    roomCode: selection.mode === "custom" ? selection.roomCode || "" : "",
     roomName: selection.mode === "custom" ? selection.roomName : "",
     roomConfig:
       selection.mode === "custom"
@@ -2658,6 +2834,8 @@ async function joinGame() {
   }
 
   try {
+    closeCurrentSocket("Joining arena");
+    clientState.connected = false;
     enterArenaButton.disabled = true;
     setStatus("Crossing into the wilds...");
     const payload = await apiRequest("/join", {
@@ -2669,12 +2847,23 @@ async function joinGame() {
     clientState.playerId = payload.playerId;
     storeCsrfToken(payload.csrfToken);
     clientState.spectatorId = null;
+    clientState.snapshot = null;
+    clientState.renderSnapshot = null;
     clientState.spectatorMode = false;
     clientState.spectatingFromDeath = false;
     clientState.spectatorFocusId = null;
     clientState.profile = payload.profile;
     if (payload.room) {
-      setStatus(`Joined ${payload.room.name} in ${payload.room.region}.`);
+      if (payload.room.mode === "custom" && payload.room.code) {
+        clientState.roomSelection.roomCode = payload.room.code;
+        setAuthMessage(`Private room ready. Invite code: ${payload.room.code}`);
+        renderRoomSelection();
+      }
+      setStatus(
+        payload.room.mode === "custom" && payload.room.code
+          ? `Joined ${payload.room.name} (${payload.room.code}) in ${payload.room.region}.`
+          : `Joined ${payload.room.name} in ${payload.room.region}.`
+      );
     }
     connectSocket();
   } catch (error) {
@@ -2683,7 +2872,37 @@ async function joinGame() {
   }
 }
 
+function selectRoomMode(mode) {
+  clientState.roomSelection.mode = mode === "custom" ? "custom" : "public";
+  if (roomModeSelect) {
+    roomModeSelect.value = clientState.roomSelection.mode;
+  }
+  renderRoomSelection();
+}
+
+function createPrivateRoom() {
+  selectRoomMode("custom");
+  clientState.roomSelection.roomCode = "";
+  if (roomCodeInput) {
+    roomCodeInput.value = "";
+  }
+  joinGame();
+}
+
+function joinPrivateRoom() {
+  selectRoomMode("custom");
+  readRoomSelectionFromUi();
+  if ((clientState.roomSelection.roomCode || "").length !== 5) {
+    setAuthMessage("Enter a 5-character private room code first.", true);
+    roomCodeInput?.focus();
+    return;
+  }
+  joinGame();
+}
+
 function connectSocket(mode = "player") {
+  closeCurrentSocket("Opening replacement socket");
+  clientState.socketMode = mode;
   clientState.pointerInitialized = false;
   clientState.lastSentInputSignature = "";
   clientState.lastSentInputAt = 0;
@@ -2699,6 +2918,10 @@ function connectSocket(mode = "player") {
   socket.addEventListener("open", () => {
     if (clientState.socket !== socket) {
       return;
+    }
+    if (mode === "spectator") {
+      clientState.spectatorMode = true;
+      clientState.spectatorFocusId = null;
     }
     clientState.connected = true;
     clientState.network.lastSnapshotReceivedAt = 0;
@@ -2741,9 +2964,16 @@ function connectSocket(mode = "player") {
       recordSnapshotArrival(payload);
       clientState.snapshot = mergeIncomingSnapshot(clientState.snapshot, payload);
       processRecentEvents(payload.recentEvents);
-      clientState.spectatorMode = Boolean(payload.spectator?.active);
+      if (clientState.socketMode === "spectator") {
+        clientState.spectatorMode = true;
+      } else {
+        clientState.spectatorMode = Boolean(payload.spectator?.active);
+      }
       if (payload.spectator?.focusPlayerId && !clientState.spectatingFromDeath) {
         clientState.spectatorFocusId = payload.spectator.focusPlayerId;
+      }
+      if (clientState.spectatorMode && !clientState.spectatorFocusId) {
+        clientState.spectatorFocusId = getSpectateTarget()?.id || null;
       }
       if (payload.profile) {
         clientState.profile = payload.profile;
@@ -2769,11 +2999,13 @@ function connectSocket(mode = "player") {
     if (clientState.socket !== socket) {
       return;
     }
+    clientState.socket = null;
     if (clientState.pingTimer) {
       clearInterval(clientState.pingTimer);
       clientState.pingTimer = null;
     }
     clientState.connected = false;
+    clientState.socketMode = "player";
     clientState.network.snapshotAgeMs = 0;
     clientState.network.outLossPct = 0;
     clientState.network.lastAckReceivedAt = 0;
@@ -2863,6 +3095,10 @@ function handleKeyChange(event, isPressed) {
   } else if (key === "v") {
     if (isPressed) {
       toggleDeathSpectate();
+    }
+  } else if (key === "enter") {
+    if (isPressed && clientState.spectatorMode) {
+      returnToMainMenu();
     }
   } else if (key === "escape") {
     if (isPressed && clientState.connected) {
@@ -2994,6 +3230,14 @@ roomModeSelect?.addEventListener("change", () => {
   renderRoomSelection();
 });
 
+roomModeButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    ensureAudioContext();
+    playUiClickSound();
+    selectRoomMode(button.dataset.roomModeValue);
+  });
+});
+
 roomRegionSelect?.addEventListener("change", () => {
   readRoomSelectionFromUi();
   fetchAvailableRooms();
@@ -3005,6 +3249,7 @@ roomPickerSelect?.addEventListener("change", () => {
 
 [
   roomNameInput,
+  roomCodeInput,
   roomMaxPlayersInput,
   roomFoodTargetInput,
   roomGrowthTargetInput,
@@ -3040,6 +3285,16 @@ enterArenaButton.addEventListener("click", () => {
   ensureAudioContext();
   playUiClickSound();
   joinGame();
+});
+createPrivateRoomButton?.addEventListener("click", () => {
+  ensureAudioContext();
+  playUiClickSound();
+  createPrivateRoom();
+});
+joinPrivateRoomButton?.addEventListener("click", () => {
+  ensureAudioContext();
+  playUiClickSound();
+  joinPrivateRoom();
 });
 spectateButton.addEventListener("click", () => {
   ensureAudioContext();
