@@ -1988,6 +1988,9 @@ async function startSpectating() {
   }
 
   try {
+    if (clientState.socket && clientState.socket.readyState !== WebSocket.CLOSED) {
+      clientState.socket.close(1000, "Switching to spectate");
+    }
     spectateButton.disabled = true;
     setStatus("Finding a hive to watch...");
     const payload = await apiRequest("/spectate", {
@@ -2690,9 +2693,13 @@ function connectSocket(mode = "player") {
     mode === "spectator"
       ? `spectatorId=${encodeURIComponent(clientState.spectatorId)}`
       : `playerId=${encodeURIComponent(clientState.playerId)}`;
-  clientState.socket = new WebSocket(`${protocol}://${window.location.host}?${query}`);
+  const socket = new WebSocket(`${protocol}://${window.location.host}?${query}`);
+  clientState.socket = socket;
 
-  clientState.socket.addEventListener("open", () => {
+  socket.addEventListener("open", () => {
+    if (clientState.socket !== socket) {
+      return;
+    }
     clientState.connected = true;
     clientState.network.lastSnapshotReceivedAt = 0;
     clientState.network.lastSnapshotIntervalMs = 0;
@@ -2721,7 +2728,10 @@ function connectSocket(mode = "player") {
     }
   });
 
-  clientState.socket.addEventListener("message", (event) => {
+  socket.addEventListener("message", (event) => {
+    if (clientState.socket !== socket) {
+      return;
+    }
     const payload = JSON.parse(event.data);
     if (payload.type === "pong") {
       handlePong(payload);
@@ -2755,7 +2765,10 @@ function connectSocket(mode = "player") {
     }
   });
 
-  clientState.socket.addEventListener("close", (event) => {
+  socket.addEventListener("close", (event) => {
+    if (clientState.socket !== socket) {
+      return;
+    }
     if (clientState.pingTimer) {
       clearInterval(clientState.pingTimer);
       clientState.pingTimer = null;
@@ -2778,6 +2791,8 @@ function connectSocket(mode = "player") {
     clientState.adminDashboard = null;
     stopAdminDashboardPolling();
     joinOverlay.classList.remove("hidden");
+    spectateButton.disabled = false;
+    enterArenaButton.disabled = false;
     const closeCode = event.code || "";
     const closeReason = event.reason || "";
     const closeSuffix = closeCode ? ` (${closeCode}${closeReason ? `: ${closeReason}` : ""})` : "";
@@ -2785,7 +2800,10 @@ function connectSocket(mode = "player") {
     renderAuthState();
   });
 
-  clientState.socket.addEventListener("error", () => {
+  socket.addEventListener("error", () => {
+    if (clientState.socket !== socket) {
+      return;
+    }
     setStatus("Socket error. Please reconnect.");
   });
 }
