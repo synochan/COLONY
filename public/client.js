@@ -308,6 +308,8 @@ const clientState = {
     snapshotsReceived: 0,
     snapshotsMissed: 0,
     inputSeq: 0,
+    pingSeq: 0,
+    pingSamples: [],
     lastAckInputSeq: 0,
     maxSentInputSeq: 0,
     lastPingSentAt: 0,
@@ -1203,27 +1205,50 @@ function sendPing() {
     return;
   }
 
-  const clientTime = Date.now();
-  clientState.network.lastPingSentAt = clientTime;
+  const sentAt = performance.now();
+  const pingId = ++clientState.network.pingSeq;
+  clientState.network.lastPingSentAt = sentAt;
   clientState.socket.send(
     JSON.stringify({
       type: "ping",
-      clientTime
+      pingId,
+      sentAt,
+      clientTime: Date.now()
     })
   );
 }
 
 function handlePong(payload) {
-  const now = Date.now();
-  const roundTripMs = Math.max(0, now - (Number(payload.clientTime) || now));
+  const now = performance.now();
+  const sentAt = Number(payload.sentAt);
+  const roundTripMs = Number.isFinite(sentAt)
+    ? Math.max(0, now - sentAt)
+    : Math.max(0, Date.now() - (Number(payload.clientTime) || Date.now()));
+  if (!Number.isFinite(roundTripMs) || roundTripMs > 30000) {
+    return;
+  }
+
+  clientState.network.pingSamples.push(roundTripMs);
+  clientState.network.pingSamples = clientState.network.pingSamples.slice(-7);
+  const sortedSamples = [...clientState.network.pingSamples].sort((left, right) => left - right);
+  let displayPing = roundTripMs;
+  if (sortedSamples.length === 1 && roundTripMs > 220) {
+    return;
+  }
+  if (sortedSamples.length < 3) {
+    displayPing = sortedSamples[0];
+  } else {
+    displayPing = sortedSamples[Math.floor(sortedSamples.length / 2)];
+  }
+
   const previousPing = clientState.network.pingMs;
-  clientState.network.pingMs = previousPing ? lerp(previousPing, roundTripMs, 0.35) : roundTripMs;
-  const delta = previousPing ? Math.abs(roundTripMs - previousPing) : 0;
+  clientState.network.pingMs = previousPing ? lerp(previousPing, displayPing, 0.35) : displayPing;
+  const delta = previousPing ? Math.abs(displayPing - previousPing) : 0;
   clientState.network.jitterMs = clientState.network.jitterMs
     ? lerp(clientState.network.jitterMs, delta, 0.2)
     : delta;
   if (payload.serverTime) {
-    const offset = now - roundTripMs / 2 - payload.serverTime;
+    const offset = Date.now() - roundTripMs / 2 - payload.serverTime;
     clientState.network.clockOffsetMs = clientState.network.clockOffsetMs
       ? lerp(clientState.network.clockOffsetMs, offset, 0.2)
       : offset;
@@ -2413,7 +2438,9 @@ function renderNetworkPanel() {
     return;
   }
 
-  networkPanel.textContent = `Ping ${Math.round(clientState.network.pingMs || 0)}ms`;
+  networkPanel.textContent = clientState.network.pingMs
+    ? `Ping ${Math.round(clientState.network.pingMs)}ms`
+    : "Ping measuring...";
 }
 
 function renderRoomCodeBadge() {
@@ -2551,7 +2578,7 @@ function renderPlayerStatusHud(player, profile, round) {
   const x = 18;
   const y = viewport.width <= 700 ? 136 : 156;
   const width = Math.min(460, Math.max(360, viewport.width - 36));
-  const height = 196;
+  const height = 204;
 
   context.save();
   context.shadowColor = "rgba(0, 0, 0, 0.34)";
@@ -2585,10 +2612,10 @@ function renderPlayerStatusHud(player, profile, round) {
 
   context.font = "800 27px Cinzel";
   context.fillStyle = "#fff8df";
-  context.fillText(formatCompactNumber(roundedScore), x + 16, y + 58);
+  context.fillText(formatCompactNumber(roundedScore), x + 16, y + 56);
   context.font = "900 11px Manrope";
   context.fillStyle = skin.primary;
-  context.fillText("SCORE", x + 18, y + 75);
+  context.fillText("SCORE", x + 18, y + 74);
 
   context.font = "900 16px Manrope";
   context.fillStyle = "#fff8df";
@@ -2600,7 +2627,7 @@ function renderPlayerStatusHud(player, profile, round) {
   context.textAlign = "left";
 
   const barX = x + 16;
-  const barY = y + 88;
+  const barY = y + 104;
   const barWidth = width - 32;
   const barHeight = 12;
   context.beginPath();
@@ -2616,9 +2643,9 @@ function renderPlayerStatusHud(player, profile, round) {
   context.fill();
   context.font = "900 11px Manrope";
   context.fillStyle = "#fff8df";
-  context.fillText(`HP ${roundedHealth}/${roundedHealthMax}`, barX, barY - 6);
+  context.fillText(`HP ${roundedHealth}/${roundedHealthMax}`, barX, barY - 8);
 
-  let chipY = y + 112;
+  let chipY = y + 128;
   let chipX = x + 16;
   const chips = [
     `Workers ${player.workers.length}/${player.maxWorkers}`,
@@ -2646,13 +2673,70 @@ function renderPlayerStatusHud(player, profile, round) {
 
   context.font = "800 12px Manrope";
   context.fillStyle = cardChoice ? "#ffd36a" : "rgba(247, 241, 217, 0.72)";
-  context.fillText(rewardText, x + 16, y + 184);
+  context.fillText(rewardText, x + 16, y + 188);
   if (round) {
     context.textAlign = "right";
     context.fillStyle = "rgba(247, 241, 217, 0.68)";
-    context.fillText(`Round ${round.number} | ${formatCompactNumber(currentSnapshot().config.roundScoreTarget)} target`, x + width - 16, y + 184);
+    context.fillText(`Round ${round.number} | ${formatCompactNumber(currentSnapshot().config.roundScoreTarget)} target`, x + width - 16, y + 188);
     context.textAlign = "left";
   }
+}
+
+function renderSpectatorStatusHud(target, round) {
+  const x = 18;
+  const y = viewport.width <= 700 ? 96 : 112;
+  const width = Math.min(410, Math.max(330, viewport.width - 36));
+  const height = 116;
+
+  context.save();
+  context.shadowColor = "rgba(0, 0, 0, 0.32)";
+  context.shadowBlur = 22;
+  context.shadowOffsetY = 10;
+  context.beginPath();
+  context.fillStyle = "rgba(10, 8, 24, 0.82)";
+  context.strokeStyle = "rgba(255, 255, 255, 0.12)";
+  context.lineWidth = 1;
+  context.roundRect(x, y, width, height, 22);
+  context.fill();
+  context.stroke();
+  context.restore();
+
+  const accent = target ? getSkin(target.skinId).primary : "#ffc857";
+  context.save();
+  const glow = context.createRadialGradient(x + width - 42, y + 22, 4, x + width - 42, y + 22, 120);
+  glow.addColorStop(0, `${accent}55`);
+  glow.addColorStop(1, "rgba(255,255,255,0)");
+  context.fillStyle = glow;
+  context.beginPath();
+  context.roundRect(x, y, width, height, 22);
+  context.fill();
+  context.restore();
+
+  context.textAlign = "left";
+  context.textBaseline = "alphabetic";
+  context.font = "900 12px Manrope";
+  context.fillStyle = accent;
+  context.fillText("SPECTATOR MODE", x + 16, y + 25);
+
+  context.font = "800 20px Cinzel";
+  context.fillStyle = "#fff8df";
+  context.fillText(target ? target.name : "Waiting for hive", x + 16, y + 56);
+
+  const scoreText = target ? `Score ${formatCompactNumber(target.score || 0)}` : "No active hive yet";
+  drawStatusPill(scoreText, x + 16, y + 68, {
+    fill: "rgba(255, 255, 255, 0.08)",
+    stroke: "rgba(255, 255, 255, 0.1)",
+    color: "#fff8df"
+  });
+
+  context.font = "800 12px Manrope";
+  context.fillStyle = "rgba(247, 241, 217, 0.72)";
+  context.textAlign = "right";
+  context.fillText("Esc: Main Menu", x + width - 16, y + 87);
+  if (round) {
+    context.fillText(`Round ${round.number} | ${formatCompactNumber(clientState.snapshot.config.roundScoreTarget)} target`, x + width - 16, y + 104);
+  }
+  context.textAlign = "left";
 }
 
 function renderOverlay() {
@@ -2671,20 +2755,7 @@ function renderOverlay() {
   }
 
   if (clientState.spectatorMode) {
-    context.fillStyle = "rgba(255,255,255,0.92)";
-    context.font = "800 18px Cinzel";
-    context.textAlign = "left";
-    context.fillText("Spectator Mode", 20, 32);
-    context.font = "700 15px Manrope";
-    context.fillText(
-      spectateTarget ? `Watching ${spectateTarget.name} | Score ${spectateTarget.score}` : "Waiting for an active hive to watch",
-      20,
-      54
-    );
-    context.fillText("Press Esc to return to the main menu.", 20, 76);
-    if (round) {
-      context.fillText(`Round ${round.number} | Target ${clientState.snapshot.config.roundScoreTarget} score`, 20, 98);
-    }
+    renderSpectatorStatusHud(spectateTarget, round);
     return;
   }
 
@@ -2928,6 +2999,10 @@ function connectSocket(mode = "player") {
     clientState.network.lastSnapshotIntervalMs = 0;
     clientState.network.snapshotsPerSecond = 0;
     clientState.network.snapshotAgeMs = 0;
+    clientState.network.pingMs = 0;
+    clientState.network.jitterMs = 0;
+    clientState.network.pingSamples = [];
+    clientState.network.lastPingSentAt = 0;
     clientState.network.lastAckInputSeq = 0;
     clientState.network.maxSentInputSeq = 0;
     clientState.network.outLossPct = 0;
@@ -3009,6 +3084,10 @@ function connectSocket(mode = "player") {
     clientState.network.snapshotAgeMs = 0;
     clientState.network.outLossPct = 0;
     clientState.network.lastAckReceivedAt = 0;
+    clientState.network.pingMs = 0;
+    clientState.network.jitterMs = 0;
+    clientState.network.pingSamples = [];
+    clientState.network.lastPingSentAt = 0;
     clientState.playerId = null;
     clientState.spectatorId = null;
     clientState.snapshot = null;

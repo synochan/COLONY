@@ -4497,6 +4497,8 @@ webSocketServer.on("connection", (socket, request) => {
         socket.send(
           JSON.stringify({
             type: "pong",
+            pingId: Number(message.pingId) || 0,
+            sentAt: Number(message.sentAt) || 0,
             clientTime: Number(message.clientTime) || 0,
             serverTime: Date.now()
           })
@@ -4554,6 +4556,8 @@ webSocketServer.on("connection", (socket, request) => {
         socket.send(
           JSON.stringify({
             type: "pong",
+            pingId: Number(message.pingId) || 0,
+            sentAt: Number(message.sentAt) || 0,
             clientTime: Number(message.clientTime) || 0,
             serverTime: Date.now()
           })
