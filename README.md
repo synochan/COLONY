@@ -2,12 +2,12 @@
 
 Colony.io is a fast-paced browser multiplayer game where each player controls a hive, grows a worker swarm, gathers resources, and battles rival colonies in a shared live arena.
 
-It blends:
+It combines:
 
-- real-time movement
-- worker micro-management
-- run-based upgrade choices
-- competitive map control
+- real-time movement and combat
+- worker swarm micro-management
+- run-based upgrade progression
+- competitive territory and resource control
 
 ## What The Game Includes
 
